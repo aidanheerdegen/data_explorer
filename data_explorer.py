@@ -76,7 +76,10 @@ class DatabaseExtension:
         """
         Return a list of experiments matching *all* of the supplied keywords
         """
-        return cc.querying.get_experiments(self.session, keywords=keywords).experiment
+        try:
+            return cc.querying.get_experiments(self.session, keywords=keywords).experiment
+        except AttributeError:
+            return []
 
     def variable_filter(self, variables):
         """
@@ -144,12 +147,12 @@ def DatabaseExplorer(session=None, de=None):
         disabled=False
     )
 
-    box_layout = Layout(position='left', width='initial', border= '1px solid black')
+    box_layout = Layout(position='left', width='auto', border= '0px solid black')
 
     # Keyword filtering element
     filter_widget = VBox(layout={'overflow': 'auto', 
-                                 'width': 'initial', 
-                                 'border': '1px solid black'})
+                                 'width': 'auto', 
+                                 'border': '0px solid black'})
     keywords_checkboxes = [Checkbox(description=str(k), 
                                     value=False, 
                                     indent=False,
@@ -206,13 +209,13 @@ def DatabaseExplorer(session=None, de=None):
         value='',
         placeholder='Experiment description',
         description='Description',
-        layout={'height': '100%', 'width': '100%', 'border': '1px solid black'}
+        layout={'height': '100%', 'width': '100%', 'border': '0px solid black'}
     )
     expt_notes = Textarea(
         value='',
         placeholder='Experiment notes',
         description='Notes',
-        layout={'height': '100%', 'width': '100%', 'border': '1px solid black'},
+        layout={'height': '100%', 'width': '100%', 'border': '0px solid black'},
         disabled=False
     )
     
@@ -221,13 +224,13 @@ def DatabaseExplorer(session=None, de=None):
         value = True,
         indent=False,
         description='Hide coordinates',
-        layout={'width': '100%', 'border': '1px solid black'},
+        layout={'width': '100%', 'border': '0px solid black'},
     )
     var_filter_restarts = Checkbox(
         value = True,
         indent=False,
         description='Hide restarts',
-        layout={'width': '100%', 'border': '1px solid black'},
+        layout={'width': '100%', 'border': '0px solid black'},
     )
 
     # Reset button
@@ -292,12 +295,13 @@ def DatabaseExplorer(session=None, de=None):
         Open an Experiment Explorer UI with selected experiment
         """
         if expt_selector.value is not None:
-            ExperimentExplorer(expt_selector.value, session, de)
+            ee = ExperimentExplorer(session, de)
+            ee.run(experiment=expt_selector.value)
 
     def show_experiment_information():
 
         experiment = expt_selector.value
-        expt = experiments[experiments.experiment == experiment]
+        expt = de.experiments[de.experiments.experiment == experiment]
 
         expt_info.value="""
         <h4>Experiment: {experiment}</h4>
@@ -359,19 +363,19 @@ def DatabaseExplorer(session=None, de=None):
                            Label(value="Experiments:"), 
                            expt_selector,
                            ],
-                           layout={'padding': '10px', 'border': '1px solid grey'}
+                           layout={'padding': '10px', 'border': '0px solid grey'}
                            ),
                       VBox([
                             Label(value="Filter by keyword:"), 
                             filter_widget, 
                             filter_button,
                             ],
-                            layout={'padding': '10px', 'border': '1px solid grey'}
+                            layout={'padding': '10px', 'border': '0px solid grey'}
                           ),
                       VBox([
                             Label(value="Filter by variable:"), 
                             var_filter_selector],
-                            layout={'padding': '10px', 'border': '1px solid grey'}
+                            layout={'padding': '10px', 'border': '0px solid grey'}
                            ),
                       VBox([
                             var_filter_coords,
@@ -380,7 +384,7 @@ def DatabaseExplorer(session=None, de=None):
                             ],
                             layout={'border': '0px solid grey'}
                            )
-                    ], layout={'width': '100%', 'padding': '10px', 'border': '1px solid black'}
+                    ], layout={'width': '100%', 'padding': '10px', 'border': '0px solid black'}
                     )
     display(selectors)
                               
@@ -688,7 +692,7 @@ class ExperimentExplorer():
 
         display(self.widgets['header'])
         
-        box_layout = widgets.Layout(position='left', width='initial', padding='10px', flex='1 1 auto', border='0px solid black')
+        box_layout = widgets.Layout(position='left', width='auto', padding='10px', flex='1 1 auto', border='0px solid black')
         
         # Left pane
         var_select_box = VBox([
