@@ -30,7 +30,7 @@ class DatabaseExtension:
         self.expt_variable_map     = self.experiment_variable_map()
         self.variables            = self.unique_variable_list()
 
-    def experiment_variable_map(self):
+    def experiment_variable_map(self, experiments=None):
         """
         Make a pandas table with experiment as the index and columns
         of name, long_name and restart flag.
@@ -38,8 +38,14 @@ class DatabaseExtension:
         Also make lists of unique name/long_name 
         """
 
+        if experiments is None:
+            experiments = self.experiments.experiment
+        else:
+            if isinstance(experiments, str):
+                experiments = [experiments, ]
+
         allvars = pd.concat([self.get_variables(expt)
-                     for expt in self.experiments.experiment], keys=self.experiments.experiment)
+                     for expt in experiments], keys=experiments)
 
         # Create a new column to flag if variable is from a restart directory
         allvars['restart'] = allvars.ncfile.str.contains('restart')
@@ -435,7 +441,7 @@ class ExperimentExplorer():
         self.widgets['var_search'] = Text(
             placeholder='Start typing', 
             description='Search', 
-            layout={'width': '90%'})
+            layout={'width': 'auto'})
             
         # Variable selector element
         self.widgets['var_selector'] = Select(
@@ -443,6 +449,20 @@ class ExperimentExplorer():
             rows=20,
             description='Variables:',
             layout={'width': 'auto'}
+        )
+
+        # Coordinate variable filter checkbox
+        self.widgets['var_filter_coords'] = Checkbox(
+            value=True,
+            indent=True,
+            description='Hide coordinates',
+        )
+
+        # Restart variable filter checkbox
+        self.widgets['var_filter_restarts'] = Checkbox(
+            value=True,
+            indent=True,
+            description='Hide restarts',
         )
         
         # Experiment selector element
@@ -452,6 +472,7 @@ class ExperimentExplorer():
             description='Experiment:',
             layout={'width': 'auto'}
         )
+
         # Date selection widget
         self.widgets['var_daterange'] = widgets.SelectionRangeSlider(
             options=['0000','0001'],
@@ -460,6 +481,7 @@ class ExperimentExplorer():
             layout={'width': '80%'},
             disabled=True
         )
+
         # Variable information widget
         self.widgets['var_info'] = widgets.HTML()
 
@@ -525,13 +547,23 @@ class ExperimentExplorer():
             """
             # Find all variables with name or long name that
             # contain the search text
-            self.widgets['var_selector'].options = self.variables[
-                    self.variables.name.str.contains(selector.new, na=False) | 
-                    self.variables.long_name.str.contains(selector.new, na=False)].name
+            self.widgets['var_selector'].options = self.get_visible_variables(selector.new)
             # Ensure no current selection
             self.widgets['var_selector'].value = None
 
         self.widgets['var_search'].observe(var_search_eventhandler, names='value')
+
+        def filter_restart_eventhandler(selector):
+            """
+            Filter restart and coordinate variables when checkboxes
+            selected. Called when checkboxes selected/deselected
+            """
+            # Mask options
+            self.widgets['var_selector'].options = self.get_visible_variables() #self.widgets['var_search'].value)
+            self.widgets['var_selector'].value = None
+
+        self.widgets['var_filter_restarts'].observe(filter_restart_eventhandler, names='value')
+        self.widgets['var_filter_coords'].observe(filter_restart_eventhandler, names='value')
             
         def var_eventhandler(selector):
             """
@@ -562,7 +594,31 @@ class ExperimentExplorer():
 
         self.widgets['var_selector'].observe(var_eventhandler, names='value')
 
-                
+    def get_visible_variables(self, variable_name=None):
+
+        # First check masking of coords and restarts 
+
+        # Set up a mask with all true values
+        mask = self.de.variables.name.ne('')
+
+        # Filter out restarts and coordinates if checkboxes selected 
+        if self.widgets['var_filter_restarts'].value:
+            mask = mask & (self.de.variables['restart'] != self.widgets['var_filter_restarts'].value)
+        if self.widgets['var_filter_coords'].value:
+            mask = mask & (self.de.variables['coordinate'] != self.widgets['var_filter_coords'].value)
+
+        # Make a temporary list of variables
+        variables = self.de.variables[mask]
+
+        if variable_name is None or variable_name == '':
+            self.widgets['var_search'].value = ''
+        else:
+            variables = variables[variables.name.str.contains(variable_name, na=False) | 
+                                  variables.long_name.str.contains(variable_name, na=False)]
+
+        # Return a sorted list of variables matching the current search criteria
+        return sorted(variables.name, key=str.casefold)
+
     def load_experiment(self, experiment_name):
         """
         When first instantiated, or experiment changed, the variable
@@ -570,10 +626,19 @@ class ExperimentExplorer():
         """
         self.experiment_name = experiment_name
         self.variables = self.de.get_variables(experiment_name)
-        self.widgets['var_selector'].options = self.variables.name
-        self.widgets['var_search'].value = ''
-        self.widgets['var_selector'].value = None
+        self.load_variables()
+
+    def load_variables(self):
+        """
+        Populate the variable selector dialog
+        """
         
+        # Reset the search box
+        self.widgets['var_search'].value = ''
+
+        # Mask options
+        self.widgets['var_selector'].options = self.get_visible_variables()
+        self.widgets['var_selector'].value = None
 
     def load_var_info(self, long_name, frequency):
         """
@@ -623,11 +688,16 @@ class ExperimentExplorer():
 
         display(self.widgets['header'])
         
-        box_layout = widgets.Layout(position='left', width='initial', flex='1 1 auto', border= '0px solid black')
+        box_layout = widgets.Layout(position='left', width='initial', padding='10px', flex='1 1 auto', border='0px solid black')
         
         # Left pane
-        var_select_box = VBox([self.widgets['var_search'], self.widgets['var_selector']])
-
+        var_select_box = VBox([
+                                self.widgets['var_search'], 
+                                self.widgets['var_selector'],
+                                self.widgets['var_filter_coords'],
+                                self.widgets['var_filter_restarts'],
+                               ])
+   
         # Right pane
         var_info_box = VBox([
                              self.widgets['expt_selector'],
