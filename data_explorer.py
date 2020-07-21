@@ -2,8 +2,8 @@ import re
 
 import cosima_cookbook as cc
 import ipywidgets as widgets
-from ipywidgets import Button, VBox, HBox, Label, Layout, Select
-from ipywidgets import SelectMultiple, Text, Textarea, Checkbox
+from ipywidgets import HTML, Button, VBox, HBox, Label, Layout, Select
+from ipywidgets import SelectMultiple, Tab, Text, Textarea, Checkbox
 from ipywidgets import interact, interact_manual, AppLayout, Dropdown
 import ipywidgets as wid
 
@@ -12,6 +12,14 @@ import pandas as pd
 from cosima_cookbook.database import CFVariable, NCFile, NCExperiment, NCVar
 
 from sqlalchemy import func
+
+def return_value_or_empty(value):
+    """Return value if not None, otherwise empty"""
+    if value is None:
+        return ''
+    else:
+        return value
+
 class DatabaseExtension:
 
     session = None
@@ -26,7 +34,7 @@ class DatabaseExtension:
             session = cc.database.create_session()
         self.session              = session
         self.experiments          = cc.querying.get_experiments(session, all=True)
-        self.keywords             = cc.querying.get_keywords(session)
+        self.keywords             = sorted(cc.querying.get_keywords(session), key=str.casefold)
         self.expt_variable_map     = self.experiment_variable_map()
         self.variables            = self.unique_variable_list()
 
@@ -127,14 +135,270 @@ class DatabaseExtension:
 
         return pd.DataFrame(q)
 
-def DatabaseExplorer(session=None, de=None):
+class DatabaseExplorer:
 
+    session = None
+    de = None
+    widgets = {}
+
+    def __init__(self, session=None, de=None):
+
+        if de is None: 
+            de = DatabaseExplorer(session)
+
+        self.de = de
+    
+    @staticmethod
     def return_value_or_empty(value):
         """Return value if not None, otherwise empty"""
         if value is None:
             return ''
         else:
             return value
+
+    def make_widgets(self):
+
+        box_layout = Layout(position='left', width='auto', border= '0px solid black')
+
+        # Gui header
+        self.widgets['header'] = HTML(
+            value="""
+            <h3>Database Explorer</h3>
+
+            <p>Select an experiemt to show more detailed information where available.
+            With an experiment selected push 'Load' to open an Experiment Explorer gui.
+
+            <p>Select keywords and/or variables and push 'Filter' to show only 
+            matching experiments. Use option or shift key to select multiple variables</p>
+
+            </p>
+            """,
+            description='',
+        ) 
+
+        # Experiment selector box
+        self.widgets['expt_selector'] = Select(
+            options=self.de.experiments.experiment,
+            rows=20,
+            layout={'width': 'auto'},
+            disabled=False
+        )
+
+        # Keyword filtering element is a box containing a bunch of
+        # checkboxes
+        self.widgets['filter_widget'] = VBox(layout={'overflow': 'auto', 
+                                                     'width': 'auto'})
+        keywords_checkboxes = [Checkbox(description=str(k), 
+                                        value=False, 
+                                        indent=False,
+                                        layout=box_layout) for k in self.de.keywords]
+        self.widgets['filter_widget'].children = keywords_checkboxes
+
+        # Keyword filtering button
+        self.widgets['filter_button'] = Button(
+            description='Filter',
+            layout={'width': '50%', 'align': 'center'},
+            tooltip='Click to filter experiments'
+        )
+        self.widgets['filter_button'].on_click(self.filter_experiments)
+            
+        # Element for filtering experiments by variables
+        self.widgets['var_filter_selector'] = SelectMultiple(
+            options=sorted(self.de.variables.name),
+            rows=20,
+            # description='Experiments:',
+            layout={'width': '100%'},
+            disabled=False,
+        )
+
+        # Variable filtering elements
+        self.widgets['var_filter_coords'] = Checkbox(
+            value=True,
+            indent=False,
+            description='Hide coordinates',
+        )
+        self.widgets['var_filter_restarts'] = Checkbox(
+            value=True,
+            indent=False,
+            description='Hide restarts',
+        )
+        # Reset button
+        def reset_variables(b):
+            self.widgets['var_filter_selector'].value = ()
+        self.widgets['reset_var_button'] = Button(
+            description='Reset',
+            layout={'width': '50%', 'align': 'center'},
+            tooltip='Click to reset variable selection'
+        )
+        self.widgets['reset_var_button'].on_click(reset_variables)
+
+        # A box to hold all the variable filtering components
+        self.widgets['var_filter_box'] = VBox([
+                                               self.widgets['var_filter_selector'],
+                                               self.widgets['var_filter_coords'],
+                                               self.widgets['var_filter_restarts'],
+                                               self.widgets['reset_var_button'],
+                                              ])
+
+        # Tab box to contain keyword and variable filters
+        self.widgets['filter_tabs'] = Tab(title='Filter', children=[self.widgets['filter_widget'], self.widgets['var_filter_box']])
+        self.widgets['filter_tabs'].set_title(0, 'Keyword')
+        self.widgets['filter_tabs'].set_title(1, 'Variable')
+
+        self.widgets['load_button'] = Button(
+            description='Load Experiment',
+            disabled=False,
+            layout={'width': '20%', 'align': 'center'},
+            button_style='', # 'success', 'info', 'warning', 'danger' or ''
+            tooltip='Click to load experiment'
+            #icon='check'
+        )
+        self.widgets['load_button'].on_click(self.load_experiment)
+
+        # Experiment information panel
+        self.widgets['expt_info'] = HTML(
+            value='',
+            description='',
+        )
+
+        def expt_eventhandler(selector):
+            """
+            When experiment is selected populate the experiment information
+            elements
+            """
+            if selector.new is None:
+                return
+            self.show_experiment_information(selector.new)
+
+        self.widgets['expt_selector'].observe(expt_eventhandler, names='value')
+
+        def filter_restart_eventhandler(selector):
+            """
+            Re-populate variable list when checkboxes selected/de-selected
+            """
+            self.filter_variables()
+
+        self.widgets['var_filter_restarts'].observe(filter_restart_eventhandler, names='value')
+        self.widgets['var_filter_coords'].observe(filter_restart_eventhandler, names='value')
+
+    def filter_variables(self):
+        """
+        Re-populate variable list when checkboxes selected/de-selected
+        """
+        # Set up a mask with all true values
+        mask = self.de.variables.name.ne('')
+
+        # Filter out restarts and coordinates if checkboxes selected 
+        if self.widgets['var_filter_restarts'].value:
+            mask = mask & (self.de.variables['restart'] != self.widgets['var_filter_restarts'].value)
+        if self.widgets['var_filter_coords'].value:
+            mask = mask & (self.de.variables['coordinate'] != self.widgets['var_filter_coords'].value)
+
+        # Mask options
+        self.widgets['var_filter_selector'].options = sorted(self.de.variables[mask].name, key=str.casefold)
+
+    def show_experiment_information(self, experiment_name):
+
+        expt = self.de.experiments[self.de.experiments.experiment == experiment_name]
+
+        self.widgets['expt_info'].value="""
+        <h4>Experiment: {experiment}</h4>
+
+        <p><b>Description:</b> {description}</p>
+
+        <p><b>Notes:</b> {notes}</p>
+
+        <p><b>Contact:</b> {contact} <{email}></p>
+
+        <p><b>Number of files::</b> {nfiles}</p>
+
+        <p><b>Created::</b> {created}</p>
+        """.format(
+                   experiment=experiment_name,
+                   description=return_value_or_empty(expt.description.values[0]),
+                   notes=return_value_or_empty(expt.notes.values[0]),
+                   contact=return_value_or_empty(expt.contact.values[0]),
+                   email=return_value_or_empty(expt.email.values[0]),
+                   nfiles=return_value_or_empty(expt.ncfiles.values[0]),
+                   created=return_value_or_empty(expt.created.values[0]),
+                   )
+        
+    def filter_experiments(self, b):
+        """
+        Filter experiment list by keywords and variable
+        """
+        kwds = []
+        options = set(self.de.experiments.experiment)
+
+        for kwd in self.widgets['filter_widget'].children:
+            # print(kwd)
+            if kwd.value:
+                kwds.append(kwd.description)
+        if len(kwds) > 0:
+            options.intersection_update(self.de.keyword_filter(kwds))
+
+        variables = self.widgets['var_filter_selector'].value
+        if len(variables) > 0:
+            options.intersection_update(self.de.variable_filter(variables))
+
+        self.widgets['expt_selector'].options = options
+        self.widgets['expt_selector'].value = None
+
+        def filter_restart_eventhandler(selector):
+            """
+            When experiment is selected populate the experiment information
+            elements
+            """
+            # Set up a mask with all true values
+            mask = self.de.variables.name.ne('')
+
+            # Filter out restarts and coordinates if checkboxes selected 
+            if var_filter_restarts.value:
+                mask = mask & (self.de.variables['restart'] != var_filter_restarts.value)
+            if var_filter_coords.value:
+                mask = mask & (self.de.variables['coordinate'] != var_filter_coords.value)
+
+            # Mask options
+            var_filter_selector.options = sorted(self.de.variables[mask].name, key=str.casefold)
+
+    def load_experiment(b):
+        """
+        Open an Experiment Explorer UI with selected experiment
+        """
+        if expt_selector.value is not None:
+            ee = ExperimentExplorer(self.session, self.de)
+            ee.run(experiment=self.widgets['expt_selector'].value)
+
+    def run(self):
+    
+        self.make_widgets()
+
+        self.filter_variables()
+
+        variables = None
+
+        box_layout = Layout(padding='10px', width='100%')
+
+        display(self.widgets['header'])
+        selectors = HBox([
+                        VBox([Label(value="Experiments:"), 
+                              self.widgets['expt_selector'],
+                              self.widgets['load_button']],
+                             layout=box_layout,
+                            ),
+                        VBox([Label(value="Filter:"), 
+                              self.widgets['filter_tabs'],
+                              self.widgets['filter_button']],
+                              layout=box_layout,
+                            ),
+                        ], layout=box_layout
+                        )
+        display(selectors)
+                                
+        display(widgets.HBox([self.widgets['expt_info']], layout=box_layout))
+
+
+def oldDatabaseExplorer(session=None, de=None):
 
     if de is None: 
         de = DatabaseExplorer(session)
@@ -395,6 +659,7 @@ def DatabaseExplorer(session=None, de=None):
     display(info)
     load_box = widgets.HBox([load_button,])
     display(load_box)
+
 
 class ExperimentExplorer():
 
