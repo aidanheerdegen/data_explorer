@@ -35,7 +35,7 @@ class DatabaseExtension:
         self.session              = session
         self.experiments          = cc.querying.get_experiments(session, all=True)
         self.keywords             = sorted(cc.querying.get_keywords(session), key=str.casefold)
-        self.expt_variable_map     = self.experiment_variable_map()
+        self.expt_variable_map    = self.experiment_variable_map()
         self.variables            = self.unique_variable_list()
 
     def experiment_variable_map(self, experiments=None):
@@ -135,6 +135,120 @@ class DatabaseExtension:
 
         return pd.DataFrame(q)
 
+class VariableSelector(widgets.VBox):
+
+    variables = None
+    visible_variables = None
+    widgets = {}
+
+    def __init__(self, variables):
+
+        # variables is a pandas dataframe
+        self.variables = variables
+        self.visible_variables = variables
+
+        # Variable search
+        self.widgets['search'] = Text(
+            placeholder='Search: start typing', 
+            # description='Search', 
+            layout={'width': 'auto'},
+        )
+        # Variable selection box
+        self.widgets['selector'] = Select(
+            options=sorted(self.variables.name, key=str.casefold),
+            rows=20,
+            layout={'width': 'auto'},
+        )
+        # Variable info
+        self.widgets['info'] = HTML(
+            # description='Search', 
+            layout={'width': 'auto'},
+        )
+        # Variable filtering elements
+        self.widgets['filter_coords'] = Checkbox(
+            value=True,
+            indent=False,
+            description='Hide coordinates',
+        )
+        self.widgets['filter_restarts'] = Checkbox(
+            value=True,
+            indent=False,
+            description='Hide restarts',
+        )
+
+        super().__init__(children=list(self.widgets.values()))
+
+        self._filter_eventhandler(None)
+        self._selector_eventhandler(None)
+        self._set_observes()
+
+    def _set_observes(self):
+        """
+        Set event handlers
+        """
+        for w in ['filter_coords', 'filter_restarts']:
+            self.widgets[w].observe(self._filter_eventhandler, names='value')
+
+        self.widgets['search'].observe(self._search_eventhandler, names='value')
+        self.widgets['selector'].observe(self._selector_eventhandler, names='value')
+
+    def _filter_eventhandler(self, event):
+        """
+        Optionally hide some variables
+        """
+
+        # Set up a mask with all true values
+        mask = self.variables.name.ne('')
+
+        # Filter out restarts and coordinates if checkboxes selected 
+        if self.widgets['filter_restarts'].value:
+            mask = mask & (self.variables['restart'] != self.widgets['filter_restarts'].value)
+        if self.widgets['filter_coords'].value:
+            mask = mask & (self.variables['coordinate'] != self.widgets['filter_coords'].value)
+        
+        # Mask out hidden variables
+        self.visible_variables = self.variables[mask]
+
+        # Update the variable selector
+        self._update_variables(self.visible_variables.name)
+
+        # Wipe the search
+        self.widgets['search'].value = ''
+        self.widgets['selector'].value = None
+
+    def _search_eventhandler(self, event):
+        """
+        Live search bar, updates the selector options dynamically, does not alter
+        self.visible_variables
+        """
+        search_term = self.widgets['search'].value
+
+        if search_term is None or search_term == '':
+            variables = self.visible_variables
+        else:
+            variables = self.visible_variables[self.visible_variables.name.str.contains(search_term, na=False) |
+                                           self.visible_variables.long_name.str.contains(search_term, na=False) ]
+
+        self._update_variables(variables.name)
+    
+    def _selector_eventhandler(self, event):
+        """
+        Update variable info when variable selected
+        """
+        selected_variable = self.widgets['selector'].value
+        if selected_variable is None or selected_variable == '':
+            long_name = ''
+        else:
+            long_name = self.visible_variables[self.visible_variables.name == selected_variable].long_name.values[0]
+        self.widgets['info'].value = '<b>Long name:</b> {long_name}'.format(long_name=long_name)
+    
+    def _update_variables(self, variables):
+        """
+        Update the variables visible in the selector
+        """
+        self.widgets['selector'].options = sorted(variables, key=str.casefold)
+
+
 class DatabaseExplorer:
 
     session = None
@@ -158,7 +272,7 @@ class DatabaseExplorer:
 
     def make_widgets(self):
 
-        box_layout = Layout(position='left', width='auto', border= '0px solid black')
+        box_layout = Layout(padding='10px', width='auto', border= '0px solid black')
 
         # Gui header
         self.widgets['header'] = HTML(
@@ -180,13 +294,13 @@ class DatabaseExplorer:
         self.widgets['expt_selector'] = Select(
             options=self.de.experiments.experiment,
             rows=20,
-            layout={'width': 'auto'},
+            layout={'width': 'initial'},
             disabled=False
         )
 
         # Keyword filtering element is a box containing a bunch of
         # checkboxes
-        self.widgets['filter_widget'] = VBox(layout={'overflow': 'auto', 
+        self.widgets['filter_widget'] = VBox(layout={'overflow': 'scroll', 
                                                      'width': 'auto'})
         keywords_checkboxes = [Checkbox(description=str(k), 
                                         value=False, 
@@ -202,14 +316,65 @@ class DatabaseExplorer:
         )
         self.widgets['filter_button'].on_click(self.filter_experiments)
             
-        # Element for filtering experiments by variables
-        self.widgets['var_filter_selector'] = SelectMultiple(
+        # Elements for filtering experiments by variables 
+        # Variable search box
+        self.widgets['var_search'] = Text(
+            placeholder='Start typing', 
+            description='Search', 
+            layout={'width': 'auto'},
+        )
+        # Variable filtering selection box
+        self.widgets['var_filter_selector'] = Select(
             options=sorted(self.de.variables.name),
             rows=20,
             # description='Experiments:',
-            layout={'width': '100%'},
-            disabled=False,
+            layout={'width': 'auto'},
         )
+        def var_search_eventhandler(selector):
+            """
+            Called when text type into variable search box
+            """
+            # Find all variables with name or long name that
+            # contain the search text
+            self.widgets['var_filter_selector'].options = self.get_visible_variables(selector.new)
+            # Ensure no current selection
+            self.widgets['var_filter_selector'].value = None
+        self.widgets['var_search'].observe(var_search_eventhandler, names='value')
+        
+        # Button to add variable from selector to selected
+        self.widgets['var_filter_add'] = Button(
+            tooltip='Add selected variable to filter',
+            icon='angle-double-right',
+            layout={'width': 'auto'},
+        )
+        # Button to add variable from selector to selected
+        self.widgets['var_filter_subtract'] = Button(
+            tooltip='Remove selected variable from filter',
+            icon='angle-double-left',
+            layout={'width': 'auto'},
+        )
+        # Selected variables for filtering
+        self.widgets['var_filter_selected'] = Select(
+            options=[],
+            rows=20,
+            layout={'width': '100%'},
+        )
+        # Function to update the selected variables
+        def add_var_to_selected(button):
+            selected_vars = set(self.widgets['var_filter_selected'].options)
+            selected_vars.add(self.widgets['var_filter_selector'].value)
+            self.widgets['var_filter_selected'].options = sorted(selected_vars, key=str.casefold)
+            self.filter_variables()
+        def subtract_var_from_selected(button):
+            selected_vars = set(self.widgets['var_filter_selected'].options)
+            if self.widgets['var_filter_selected'].value is None:
+                return
+            selected_vars.remove(self.widgets['var_filter_selected'].value)
+            self.widgets['var_filter_selected'].options = sorted(selected_vars, key=str.casefold)
+            self.filter_variables()
+
+        self.widgets['var_filter_add'].on_click(add_var_to_selected)
+        self.widgets['var_filter_subtract'].on_click(subtract_var_from_selected)
 
         # Variable filtering elements
         self.widgets['var_filter_coords'] = Checkbox(
@@ -233,12 +398,21 @@ class DatabaseExplorer:
         self.widgets['reset_var_button'].on_click(reset_variables)
 
         # A box to hold all the variable filtering components
-        self.widgets['var_filter_box'] = VBox([
+        self.widgets['var_filter_box'] = HBox([
+                                            VBox([
+                                               Label(value="Variables:"), 
+                                               self.widgets['var_search'],
                                                self.widgets['var_filter_selector'],
                                                self.widgets['var_filter_coords'],
                                                self.widgets['var_filter_restarts'],
                                                self.widgets['reset_var_button'],
-                                              ])
+                                              ]),
+                                              VBox([self.widgets['var_filter_add'],
+                                                    self.widgets['var_filter_subtract']],
+                                                    layout={'height': '100%', 'padding': '10px'}),
+                                              VBox([Label(value="Filter variables:"), 
+                                                    self.widgets['var_filter_selected'],]),
+                                            ], layout={'width': 'auto'})
 
         # Tab box to contain keyword and variable filters
         self.widgets['filter_tabs'] = Tab(title='Filter', children=[self.widgets['filter_widget'], self.widgets['var_filter_box']])
@@ -248,7 +422,7 @@ class DatabaseExplorer:
         self.widgets['load_button'] = Button(
             description='Load Experiment',
             disabled=False,
-            layout={'width': '20%', 'align': 'center'},
+            layout={'width': '50%', 'align': 'center'},
             button_style='', # 'success', 'info', 'warning', 'danger' or ''
             tooltip='Click to load experiment'
             #icon='check'
@@ -259,6 +433,7 @@ class DatabaseExplorer:
         self.widgets['expt_info'] = HTML(
             value='',
             description='',
+            layout={'width': '80%', 'align': 'center'},
         )
 
         def expt_eventhandler(selector):
@@ -281,6 +456,31 @@ class DatabaseExplorer:
         self.widgets['var_filter_restarts'].observe(filter_restart_eventhandler, names='value')
         self.widgets['var_filter_coords'].observe(filter_restart_eventhandler, names='value')
 
+    def get_visible_variables(self, variable_name=None):
+
+        # First check masking of coords and restarts 
+
+        # Set up a mask with all true values
+        mask = self.de.variables.name.ne('')
+
+        # Filter out restarts and coordinates if checkboxes selected 
+        if self.widgets['var_filter_restarts'].value:
+            mask = mask & (self.de.variables['restart'] != self.widgets['var_filter_restarts'].value)
+        if self.widgets['var_filter_coords'].value:
+            mask = mask & (self.de.variables['coordinate'] != self.widgets['var_filter_coords'].value)
+
+        # Make a temporary list of variables
+        variables = self.de.variables[mask]
+
+        if variable_name is None or variable_name == '':
+            self.widgets['var_search'].value = ''
+        else:
+            variables = variables[variables.name.str.contains(variable_name, na=False) | 
+                                  variables.long_name.str.contains(variable_name, na=False)]
+
+        # Return a sorted list of variables matching the current search criteria
+        return sorted(variables.name, key=str.casefold)
+
     def filter_variables(self):
         """
         Re-populate variable list when checkboxes selected/de-selected
@@ -293,6 +493,8 @@ class DatabaseExplorer:
             mask = mask & (self.de.variables['restart'] != self.widgets['var_filter_restarts'].value)
         if self.widgets['var_filter_coords'].value:
             mask = mask & (self.de.variables['coordinate'] != self.widgets['var_filter_coords'].value)
+        if len(self.widgets['var_filter_selected'].options) > 0:
+            mask = mask & ~(self.de.variables.name.isin(self.widgets['var_filter_selected'].options))
 
         # Mask options
         self.widgets['var_filter_selector'].options = sorted(self.de.variables[mask].name, key=str.casefold)
@@ -302,17 +504,25 @@ class DatabaseExplorer:
         expt = self.de.experiments[self.de.experiments.experiment == experiment_name]
 
         self.widgets['expt_info'].value="""
-        <h4>Experiment: {experiment}</h4>
-
-        <p><b>Description:</b> {description}</p>
-
-        <p><b>Notes:</b> {notes}</p>
-
-        <p><b>Contact:</b> {contact} <{email}></p>
-
-        <p><b>Number of files::</b> {nfiles}</p>
-
-        <p><b>Created::</b> {created}</p>
+        <style>
+            body {{
+                font: normal 8px Verdana, Arial, sans-serif;
+            }}
+            table {{
+                border-spacing: 8px 0px; background-color: #fce8b3;"
+            }}
+            td    {{
+                padding: 2px;
+            }}
+        </style>
+        <table>
+        <tr><td><b>Experiment:</b></td> <td>{experiment}</td></tr>
+        <tr><td style="vertical-align:top;"><b>Description:</b></td> <td>{description}</td></tr>
+        <tr><td><b>Notes:</b></td> <td>{notes}</td></tr>
+        <tr><td><b>Contact:</b></td> <td>{contact} &lt;{email}&gt;</td></tr>
+        <tr><td><b>No. files:</b></td> <td>{nfiles}</td></tr>
+        <tr><td><b>Created:</b></td> <td>{created}</td></tr>
+        </table>
         """.format(
                    experiment=experiment_name,
                    description=return_value_or_empty(expt.description.values[0]),
@@ -337,7 +547,7 @@ class DatabaseExplorer:
         if len(kwds) > 0:
             options.intersection_update(self.de.keyword_filter(kwds))
 
-        variables = self.widgets['var_filter_selector'].value
+        variables = self.widgets['var_filter_selected'].options
         if len(variables) > 0:
             options.intersection_update(self.de.variable_filter(variables))
 
@@ -361,11 +571,11 @@ class DatabaseExplorer:
             # Mask options
             var_filter_selector.options = sorted(self.de.variables[mask].name, key=str.casefold)
 
-    def load_experiment(b):
+    def load_experiment(self, b):
         """
         Open an Experiment Explorer UI with selected experiment
         """
-        if expt_selector.value is not None:
+        if self.widgets['expt_selector'].value is not None:
             ee = ExperimentExplorer(self.session, self.de)
             ee.run(experiment=self.widgets['expt_selector'].value)
 
@@ -384,9 +594,9 @@ class DatabaseExplorer:
                         VBox([Label(value="Experiments:"), 
                               self.widgets['expt_selector'],
                               self.widgets['load_button']],
-                             layout=box_layout,
+                              layout={'padding': '10px'}
                             ),
-                        VBox([Label(value="Filter:"), 
+                        VBox([Label(value="Filter by:"), 
                               self.widgets['filter_tabs'],
                               self.widgets['filter_button']],
                               layout=box_layout,
@@ -648,7 +858,7 @@ def oldDatabaseExplorer(session=None, de=None):
                             ],
                             layout={'border': '0px solid grey'}
                            )
-                    ], layout={'width': '100%', 'padding': '10px', 'border': '0px solid black'}
+                    ], layout={'padding': '10px', 'border': '0px solid black'}
                     )
     display(selectors)
                               
