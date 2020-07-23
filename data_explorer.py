@@ -1,3 +1,4 @@
+from collections import OrderedDict
 import re
 
 import cosima_cookbook as cc
@@ -138,14 +139,13 @@ class DatabaseExtension:
 class VariableSelector(widgets.VBox):
 
     variables = None
-    visible_variables = None
     widgets = {}
 
-    def __init__(self, variables):
+    def __init__(self, variables, **kwargs):
 
-        # variables is a pandas dataframe
-        self.variables = variables
-        self.visible_variables = variables
+        # variables is a pandas dataframe. Add a new column
+        # to keep track of visibility in widget
+        self.variables = variables.assign(visible=True)
 
         # Variable search
         self.widgets['search'] = Text(
@@ -162,7 +162,7 @@ class VariableSelector(widgets.VBox):
         # Variable info
         self.widgets['info'] = HTML(
             # description='Search', 
-            layout={'width': 'auto'},
+            layout={'width': '80%'},
         )
         # Variable filtering elements
         self.widgets['filter_coords'] = Checkbox(
@@ -176,7 +176,7 @@ class VariableSelector(widgets.VBox):
             description='Hide restarts',
         )
 
-        super().__init__(children=list(self.widgets.values()))
+        super().__init__(children=list(self.widgets.values()), **kwargs)
 
         self._filter_eventhandler(None)
         self._selector_eventhandler(None)
@@ -207,10 +207,10 @@ class VariableSelector(widgets.VBox):
             mask = mask & (self.variables['coordinate'] != self.widgets['filter_coords'].value)
         
         # Mask out hidden variables
-        self.visible_variables = self.variables[mask]
+        self.variables['visible'] = mask
 
         # Update the variable selector
-        self._update_variables(self.visible_variables.name)
+        self._update_variables(self.variables[self.variables.visible])
 
         # Wipe the search
         self.widgets['search'].value = ''
@@ -219,34 +219,54 @@ class VariableSelector(widgets.VBox):
     def _search_eventhandler(self, event):
         """
         Live search bar, updates the selector options dynamically, does not alter
-        self.visible_variables
+        visible mask in variables
         """
         search_term = self.widgets['search'].value
 
-        if search_term is None or search_term == '':
-            variables = self.visible_variables
-        else:
-            variables = self.visible_variables[self.visible_variables.name.str.contains(search_term, na=False) |
-                                           self.visible_variables.long_name.str.contains(search_term, na=False) ]
+        variables = self.variables[self.variables.visible]
+        if search_term is not None or search_term != '':
+            variables = variables[variables.name.str.contains(search_term, na=False) |
+                                  variables.long_name.str.contains(search_term, na=False) ]
 
-        self._update_variables(variables.name)
+        self._update_variables(variables)
     
     def _selector_eventhandler(self, event):
         """
         Update variable info when variable selected
         """
-        selected_variable = self.widgets['selector'].value
+        style = '<style>p{word-wrap: break-word}</style>' 
+        selected_variable = self.widgets['selector'].label
         if selected_variable is None or selected_variable == '':
             long_name = ''
         else:
-            long_name = self.visible_variables[self.visible_variables.name == selected_variable].long_name.values[0]
-        self.widgets['info'].value = '<b>Long name:</b> {long_name}'.format(long_name=long_name)
+            # long_name = self.variables[self.variables.name == selected_variable].long_name.values[0]
+            long_name = self.widgets['selector'].value
+        self.widgets['info'].value = style + '<p><b>Long name:</b> {long_name}</p>'.format(long_name=long_name)
     
     def _update_variables(self, variables):
         """
         Update the variables visible in the selector
         """
-        self.widgets['selector'].options = sorted(variables, key=str.casefold)
+        self.widgets['selector'].options = dict(variables.sort_values(['name'])[['name','long_name']].values)
+
+    def delete(self, variable_names):
+        """
+        Remove variables
+        """
+
+        if isinstance(variable_names, str):
+            variable_names = [ variable_names, ]
+
+        mask = self.variables['name'].isin(variable_names)
+
+        deleted = self.variables[mask]
+
+        # Delete variables
+        self.variables = self.variables[~mask]
+
+        self._update_variables(self.variables[self.variables.visible])
+
+        return deleted
 
 
 class DatabaseExplorer:
@@ -315,32 +335,11 @@ class DatabaseExplorer:
             tooltip='Click to filter experiments'
         )
         self.widgets['filter_button'].on_click(self.filter_experiments)
-            
+
         # Elements for filtering experiments by variables 
         # Variable search box
-        self.widgets['var_search'] = Text(
-            placeholder='Start typing', 
-            description='Search', 
-            layout={'width': 'auto'},
-        )
-        # Variable filtering selection box
-        self.widgets['var_filter_selector'] = Select(
-            options=sorted(self.de.variables.name),
-            rows=20,
-            # description='Experiments:',
-            layout={'width': 'auto'},
-        )
-        def var_search_eventhandler(selector):
-            """
-            Called when text type into variable search box
-            """
-            # Find all variables with name or long name that
-            # contain the search text
-            self.widgets['var_filter_selector'].options = self.get_visible_variables(selector.new)
-            # Ensure no current selection
-            self.widgets['var_filter_selector'].value = None
-        self.widgets['var_search'].observe(var_search_eventhandler, names='value')
-        
+        self.widgets['var_selector'] = VariableSelector(self.de.variables)
+
         # Button to add variable from selector to selected
         self.widgets['var_filter_add'] = Button(
             tooltip='Add selected variable to filter',
