@@ -137,20 +137,33 @@ class DatabaseExtension:
         return pd.DataFrame(q)
 
 class VariableSelector(widgets.VBox):
+    """
+    Combo widget based on a Select box with a search panel above to live
+    filter variables to Select. When a variable is selected the long name
+    attribute is displayed under the select box. There are also two 
+    checkboxes which hide coordinates and restart variables.
+
+    Note that a dict is used to populate the Select widget, so the visible
+    value is the variable name and is accessed via the label attribute, 
+    and the long name via the value attribute. 
+    """
 
     variables = None
     widgets = {}
 
     def __init__(self, variables, **kwargs):
+        """
+        variables is a pandas dataframe. kwargs are passed through to child
+        widgets which, theoretically, allows for layout information to be
+        specified
+        """
 
-        # variables is a pandas dataframe. Add a new column
-        # to keep track of visibility in widget
+        # Add a new column to keep track of visibility in widget
         self.variables = variables.assign(visible=True)
 
         # Variable search
         self.widgets['search'] = Text(
             placeholder='Search: start typing', 
-            # description='Search', 
             layout={'width': 'auto'},
         )
         # Variable selection box
@@ -178,6 +191,7 @@ class VariableSelector(widgets.VBox):
 
         super().__init__(children=list(self.widgets.values()), **kwargs)
 
+        # Call the event handlers to set up filtering etc
         self._filter_eventhandler(None)
         self._selector_eventhandler(None)
         self._set_observes()
@@ -192,7 +206,7 @@ class VariableSelector(widgets.VBox):
         self.widgets['search'].observe(self._search_eventhandler, names='value')
         self.widgets['selector'].observe(self._selector_eventhandler, names='value')
 
-    def _filter_eventhandler(self, event):
+    def _filter_eventhandler(self, event=None):
         """
         Optionally hide some variables
         """
@@ -216,7 +230,7 @@ class VariableSelector(widgets.VBox):
         self.widgets['search'].value = ''
         self.widgets['selector'].value = None
 
-    def _search_eventhandler(self, event):
+    def _search_eventhandler(self, event=None):
         """
         Live search bar, updates the selector options dynamically, does not alter
         visible mask in variables
@@ -230,7 +244,7 @@ class VariableSelector(widgets.VBox):
 
         self._update_variables(variables)
     
-    def _selector_eventhandler(self, event):
+    def _selector_eventhandler(self, event=None):
         """
         Update variable info when variable selected
         """
@@ -249,25 +263,154 @@ class VariableSelector(widgets.VBox):
         """
         self.widgets['selector'].options = dict(variables.sort_values(['name'])[['name','long_name']].values)
 
-    def delete(self, variable_names):
+    def delete(self, variable_names=None):
         """
         Remove variables
         """
+        # If no variable specified just delete the currently selected one
+        if variable_names is None:
+            if self.widgets['selector'].label is None:
+                return None
+            else:
+                variable_names = [ self.widgets['selector'].label, ]
 
         if isinstance(variable_names, str):
             variable_names = [ variable_names, ]
 
         mask = self.variables['name'].isin(variable_names)
-
         deleted = self.variables[mask]
 
         # Delete variables
         self.variables = self.variables[~mask]
 
-        self._update_variables(self.variables[self.variables.visible])
+        # Update selector. Use search eventhandler so the selector preserves any 
+        # current search term. It is annoying to have that reset and type in again 
+        # if multiple variables are to be added
+        self._search_eventhandler()
 
         return deleted
 
+    def add(self, variables):
+        """
+        Add variables
+        """
+        # Concatenate existing and new variables
+        self.variables = pd.concat([self.variables, variables])
+
+        # Need to recalculate the visible flag as new variables have been added
+        self._filter_eventhandler(None)
+
+
+class VariableSelectFilter(widgets.HBox):
+    """
+    Combo widget which contains a VariableSelector from which variables can 
+    be transferred to another Select Widget to specify which variables should
+    be used to filter experiments
+    """
+
+    variables = pd.DataFrame()
+    widgets = {}
+    subwidgets = {}
+    buttons = {}
+
+    def __init__(self, selvariables, **kwargs):
+        """
+        selvariables is a dataframe and is used to populate the VariableSelector
+
+        self.variables contains the variables transferred to the selected widget
+        """
+
+        layout = {'padding': '0px 5px'}
+
+        # Variable selector combo-widget
+        self.widgets['selector'] = VariableSelector(selvariables, **kwargs)
+
+        # Button to add variable from selector to selected
+        self.buttons['var_filter_add'] = Button(
+            tooltip='Add selected variable to filter',
+            icon='angle-double-right',
+            layout={'width': 'auto'},
+        )
+        # Button to add variable from selector to selected
+        self.buttons['var_filter_sub'] = Button(
+            tooltip='Remove selected variable from filter',
+            icon='angle-double-left',
+            layout={'width': 'auto'},
+        )
+        self.widgets['button_box'] = VBox(list(self.buttons.values()), 
+                                          layout={'padding': '100px 5px', 'height': '100%'})
+
+        # Selected variables for filtering with header widget
+        self.subwidgets['var_filter_label'] = HTML('Filter variables:', layout=layout)
+        self.subwidgets['var_filter_selected'] = Select(
+            options=[],
+            rows=20,
+            layout=layout,
+        )
+        self.widgets['filter_box'] = VBox(list(self.subwidgets.values()), layout=layout)
+
+        super().__init__(children=list(self.widgets.values()), **kwargs)
+
+        self._set_observes()
+
+    def _set_observes(self):
+        """
+        Set event handlers
+        """
+        self.buttons['var_filter_add'].on_click(self._add_var_to_selected)
+        self.buttons['var_filter_sub'].on_click(self._sub_var_from_selected)
+
+    def _update_variables(self):
+        """
+        Update filtered variables
+        """
+        self.subwidgets['var_filter_selected'].options = dict(self.variables.sort_values(['name'])[['name','long_name']].values)
+
+    def _add_var_to_selected(self, button):
+        """
+        Transfer variable from selector to filtered variables
+        """
+        self.add(self.widgets['selector'].delete())
+
+    def add(self, variable):
+        """
+        Add variable to filtered variables
+        """
+        if variable is None or len(variable) == 0:
+            return
+        self.variables = pd.concat([self.variables, variable])
+        self._update_variables()
+
+    def _sub_var_from_selected(self, button):
+        """
+        Transfer variable from filtered variables to selector
+        """
+        self.widgets['selector'].add(self.delete())
+
+    def delete(self, variable_names=None):
+        """
+        Delete variable from filtered variables
+        """
+        # If no variable specified just delete the currently selected one
+        if variable_names is None:
+            if self.subwidgets['var_filter_selected'].label is None:
+                return None
+            else:
+                variable_names = [self.subwidgets['var_filter_selected'].label]
+
+        if isinstance(variable_names, str):
+            variable_names = [ variable_names, ]
+
+        mask = self.variables['name'].isin(variable_names)
+        deleted = self.variables[mask]
+
+        # Delete variables
+        self.variables = self.variables[~mask]
+
+        # Update selector
+        self._update_variables()
+
+        return deleted
 
 class DatabaseExplorer:
 
