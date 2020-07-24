@@ -136,7 +136,7 @@ class DatabaseExtension:
 
         return pd.DataFrame(q)
 
-class VariableSelector(widgets.VBox):
+class VariableSelector(VBox):
     """
     Combo widget based on a Select box with a search panel above to live
     filter variables to Select. When a variable is selected the long name
@@ -169,7 +169,7 @@ class VariableSelector(widgets.VBox):
         # Variable selection box
         self.widgets['selector'] = Select(
             options=sorted(self.variables.name, key=str.casefold),
-            rows=20,
+            rows=10,
             layout={'width': 'auto'},
         )
         # Variable info
@@ -344,7 +344,7 @@ class VariableSelectFilter(widgets.HBox):
         self.subwidgets['var_filter_label'] = HTML('Filter variables:', layout=layout)
         self.subwidgets['var_filter_selected'] = Select(
             options=[],
-            rows=20,
+            rows=10,
             layout=layout,
         )
         self.widgets['filter_box'] = VBox(list(self.subwidgets.values()), layout=layout)
@@ -412,7 +412,17 @@ class VariableSelectFilter(widgets.HBox):
 
         return deleted
 
-class DatabaseExplorer:
+    def selected_vars(self):
+        """
+        Return all the variables in the selected variables box
+        """
+        return self.subwidgets['var_filter_selected'].options
+
+class DatabaseExplorer(VBox):
+    """
+    Combo widget based on a select box containing all experiments in
+    specified database. 
+    """
 
     session = None
     de = None
@@ -422,9 +432,11 @@ class DatabaseExplorer:
 
         if de is None: 
             de = DatabaseExplorer(session)
-
         self.de = de
-    
+
+        self._make_widgets()
+        self._set_handlers()
+
     @staticmethod
     def return_value_or_empty(value):
         """Return value if not None, otherwise empty"""
@@ -433,7 +445,7 @@ class DatabaseExplorer:
         else:
             return value
 
-    def make_widgets(self):
+    def _make_widgets(self):
 
         box_layout = Layout(padding='10px', width='auto', border= '0px solid black')
 
@@ -471,93 +483,19 @@ class DatabaseExplorer:
                                         layout=box_layout) for k in self.de.keywords]
         self.widgets['filter_widget'].children = keywords_checkboxes
 
-        # Keyword filtering button
+        # Filtering button
         self.widgets['filter_button'] = Button(
             description='Filter',
             layout={'width': '50%', 'align': 'center'},
             tooltip='Click to filter experiments'
         )
-        self.widgets['filter_button'].on_click(self.filter_experiments)
 
-        # Elements for filtering experiments by variables 
-        # Variable search box
-        self.widgets['var_selector'] = VariableSelector(self.de.variables)
-
-        # Button to add variable from selector to selected
-        self.widgets['var_filter_add'] = Button(
-            tooltip='Add selected variable to filter',
-            icon='angle-double-right',
-            layout={'width': 'auto'},
-        )
-        # Button to add variable from selector to selected
-        self.widgets['var_filter_subtract'] = Button(
-            tooltip='Remove selected variable from filter',
-            icon='angle-double-left',
-            layout={'width': 'auto'},
-        )
-        # Selected variables for filtering
-        self.widgets['var_filter_selected'] = Select(
-            options=[],
-            rows=20,
-            layout={'width': '100%'},
-        )
-        # Function to update the selected variables
-        def add_var_to_selected(button):
-            selected_vars = set(self.widgets['var_filter_selected'].options)
-            selected_vars.add(self.widgets['var_filter_selector'].value)
-            self.widgets['var_filter_selected'].options = sorted(selected_vars, key=str.casefold)
-            self.filter_variables()
-        def subtract_var_from_selected(button):
-            selected_vars = set(self.widgets['var_filter_selected'].options)
-            if self.widgets['var_filter_selected'].value is None:
-                return
-            selected_vars.remove(self.widgets['var_filter_selected'].value)
-            self.widgets['var_filter_selected'].options = sorted(selected_vars, key=str.casefold)
-            self.filter_variables()
-
-        self.widgets['var_filter_add'].on_click(add_var_to_selected)
-        self.widgets['var_filter_subtract'].on_click(subtract_var_from_selected)
-
-        # Variable filtering elements
-        self.widgets['var_filter_coords'] = Checkbox(
-            value=True,
-            indent=False,
-            description='Hide coordinates',
-        )
-        self.widgets['var_filter_restarts'] = Checkbox(
-            value=True,
-            indent=False,
-            description='Hide restarts',
-        )
-        # Reset button
-        def reset_variables(b):
-            self.widgets['var_filter_selector'].value = ()
-        self.widgets['reset_var_button'] = Button(
-            description='Reset',
-            layout={'width': '50%', 'align': 'center'},
-            tooltip='Click to reset variable selection'
-        )
-        self.widgets['reset_var_button'].on_click(reset_variables)
-
-        # A box to hold all the variable filtering components
-        self.widgets['var_filter_box'] = HBox([
-                                            VBox([
-                                               Label(value="Variables:"), 
-                                               self.widgets['var_search'],
-                                               self.widgets['var_filter_selector'],
-                                               self.widgets['var_filter_coords'],
-                                               self.widgets['var_filter_restarts'],
-                                               self.widgets['reset_var_button'],
-                                              ]),
-                                              VBox([self.widgets['var_filter_add'],
-                                                    self.widgets['var_filter_subtract']],
-                                                    layout={'height': '100%', 'padding': '10px'}),
-                                              VBox([Label(value="Filter variables:"), 
-                                                    self.widgets['var_filter_selected'],]),
-                                            ], layout={'width': 'auto'})
+        # Variable filter selector combo widget
+        self.widgets['var_filter'] = VariableSelectFilter(self.de.variables)
 
         # Tab box to contain keyword and variable filters
-        self.widgets['filter_tabs'] = Tab(title='Filter', children=[self.widgets['filter_widget'], self.widgets['var_filter_box']])
+        self.widgets['filter_tabs'] = Tab(title='Filter', children=[self.widgets['filter_widget'], 
+                                                                    self.widgets['var_filter']])
         self.widgets['filter_tabs'].set_title(0, 'Keyword')
         self.widgets['filter_tabs'].set_title(1, 'Variable')
 
@@ -565,11 +503,8 @@ class DatabaseExplorer:
             description='Load Experiment',
             disabled=False,
             layout={'width': '50%', 'align': 'center'},
-            button_style='', # 'success', 'info', 'warning', 'danger' or ''
             tooltip='Click to load experiment'
-            #icon='check'
         )
-        self.widgets['load_button'].on_click(self.load_experiment)
 
         # Experiment information panel
         self.widgets['expt_info'] = HTML(
@@ -578,85 +513,61 @@ class DatabaseExplorer:
             layout={'width': '80%', 'align': 'center'},
         )
 
-        def expt_eventhandler(selector):
-            """
-            When experiment is selected populate the experiment information
-            elements
-            """
-            if selector.new is None:
-                return
-            self.show_experiment_information(selector.new)
+        # Some box layout nonsense to organise widgets in space
+        selectors = HBox([
+                        VBox([Label(value="Experiments:"), 
+                              self.widgets['expt_selector'],
+                              self.widgets['load_button']],
+                              layout={'padding': '10px'}),
+                        VBox([Label(value="Filter by:"), 
+                              self.widgets['filter_tabs'],
+                              self.widgets['filter_button']],
+                              layout=box_layout,),
+                        ], layout=box_layout
+                        )
 
-        self.widgets['expt_selector'].observe(expt_eventhandler, names='value')
+        # Call super init and pass widgets as children
+        super().__init__(children=[self.widgets['header'],
+                                   selectors,
+                                   self.widgets['expt_info']])
 
-        def filter_restart_eventhandler(selector):
-            """
-            Re-populate variable list when checkboxes selected/de-selected
-            """
-            self.filter_variables()
+    def _set_handlers(self):
+        """
+        Define routines to handle button clicks and experiment selection
+        """
+        self.widgets['expt_selector'].observe(self._expt_eventhandler, names='value')
+        self.widgets['load_button'].on_click(self._load_experiment)
+        self.widgets['filter_button'].on_click(self._filter_experiments)
 
-        self.widgets['var_filter_restarts'].observe(filter_restart_eventhandler, names='value')
-        self.widgets['var_filter_coords'].observe(filter_restart_eventhandler, names='value')
-
-    def get_visible_variables(self, variable_name=None):
-
-        # First check masking of coords and restarts 
-
-        # Set up a mask with all true values
-        mask = self.de.variables.name.ne('')
-
-        # Filter out restarts and coordinates if checkboxes selected 
-        if self.widgets['var_filter_restarts'].value:
-            mask = mask & (self.de.variables['restart'] != self.widgets['var_filter_restarts'].value)
-        if self.widgets['var_filter_coords'].value:
-            mask = mask & (self.de.variables['coordinate'] != self.widgets['var_filter_coords'].value)
-
-        # Make a temporary list of variables
-        variables = self.de.variables[mask]
-
-        if variable_name is None or variable_name == '':
-            self.widgets['var_search'].value = ''
-        else:
-            variables = variables[variables.name.str.contains(variable_name, na=False) | 
-                                  variables.long_name.str.contains(variable_name, na=False)]
-
-        # Return a sorted list of variables matching the current search criteria
-        return sorted(variables.name, key=str.casefold)
-
-    def filter_variables(self):
+    def _filter_restart_eventhandler(selector):
         """
         Re-populate variable list when checkboxes selected/de-selected
         """
-        # Set up a mask with all true values
-        mask = self.de.variables.name.ne('')
+        self._filter_variables()
 
-        # Filter out restarts and coordinates if checkboxes selected 
-        if self.widgets['var_filter_restarts'].value:
-            mask = mask & (self.de.variables['restart'] != self.widgets['var_filter_restarts'].value)
-        if self.widgets['var_filter_coords'].value:
-            mask = mask & (self.de.variables['coordinate'] != self.widgets['var_filter_coords'].value)
-        if len(self.widgets['var_filter_selected'].options) > 0:
-            mask = mask & ~(self.de.variables.name.isin(self.widgets['var_filter_selected'].options))
+    def _expt_eventhandler(self, selector):
+        """
+        When experiment is selected populate the experiment information
+        elements
+        """
+        if selector.new is None:
+            return
+        self._show_experiment_information(selector.new)
 
-        # Mask options
-        self.widgets['var_filter_selector'].options = sorted(self.de.variables[mask].name, key=str.casefold)
-
-    def show_experiment_information(self, experiment_name):
-
+    def _show_experiment_information(self, experiment_name):
+        """
+        Populate box with experiment information
+        """
         expt = self.de.experiments[self.de.experiments.experiment == experiment_name]
 
-        self.widgets['expt_info'].value="""
+        style ="""
         <style>
-            body {{
-                font: normal 8px Verdana, Arial, sans-serif;
-            }}
-            table {{
-                border-spacing: 8px 0px; background-color: #fce8b3;"
-            }}
-            td    {{
-                padding: 2px;
-            }}
+            body  { font: normal 8px Verdana, Arial, sans-serif; }
+            table { border-spacing: 8px 0px; background-color: #fff;" }
+            td    { padding: 2px; }
         </style>
+        """
+        self.widgets['expt_info'].value = style + """
         <table>
         <tr><td><b>Experiment:</b></td> <td>{experiment}</td></tr>
         <tr><td style="vertical-align:top;"><b>Description:</b></td> <td>{description}</td></tr>
@@ -675,7 +586,7 @@ class DatabaseExplorer:
                    created=return_value_or_empty(expt.created.values[0]),
                    )
         
-    def filter_experiments(self, b):
+    def _filter_experiments(self, b):
         """
         Filter experiment list by keywords and variable
         """
@@ -689,65 +600,21 @@ class DatabaseExplorer:
         if len(kwds) > 0:
             options.intersection_update(self.de.keyword_filter(kwds))
 
-        variables = self.widgets['var_filter_selected'].options
+        variables = self.widgets['var_filter'].selected_vars()
         if len(variables) > 0:
             options.intersection_update(self.de.variable_filter(variables))
 
         self.widgets['expt_selector'].options = options
         self.widgets['expt_selector'].value = None
 
-        def filter_restart_eventhandler(selector):
-            """
-            When experiment is selected populate the experiment information
-            elements
-            """
-            # Set up a mask with all true values
-            mask = self.de.variables.name.ne('')
-
-            # Filter out restarts and coordinates if checkboxes selected 
-            if var_filter_restarts.value:
-                mask = mask & (self.de.variables['restart'] != var_filter_restarts.value)
-            if var_filter_coords.value:
-                mask = mask & (self.de.variables['coordinate'] != var_filter_coords.value)
-
-            # Mask options
-            var_filter_selector.options = sorted(self.de.variables[mask].name, key=str.casefold)
-
-    def load_experiment(self, b):
+    def _load_experiment(self, b):
         """
         Open an Experiment Explorer UI with selected experiment
         """
         if self.widgets['expt_selector'].value is not None:
-            ee = ExperimentExplorer(self.session, self.de)
-            ee.run(experiment=self.widgets['expt_selector'].value)
+            self.ee = ExperimentExplorer(self.session, self.de)
+            self.ee.run(experiment=self.widgets['expt_selector'].value)
 
-    def run(self):
-    
-        self.make_widgets()
-
-        self.filter_variables()
-
-        variables = None
-
-        box_layout = Layout(padding='10px', width='100%')
-
-        display(self.widgets['header'])
-        selectors = HBox([
-                        VBox([Label(value="Experiments:"), 
-                              self.widgets['expt_selector'],
-                              self.widgets['load_button']],
-                              layout={'padding': '10px'}
-                            ),
-                        VBox([Label(value="Filter by:"), 
-                              self.widgets['filter_tabs'],
-                              self.widgets['filter_button']],
-                              layout=box_layout,
-                            ),
-                        ], layout=box_layout
-                        )
-        display(selectors)
-                                
-        display(widgets.HBox([self.widgets['expt_info']], layout=box_layout))
 
 class ExperimentExplorer():
 
@@ -1004,7 +871,7 @@ class ExperimentExplorer():
     
         css = """
         <style type="text/css">
-        #info table{background-color: #f2f2f2;}
+        #info table{background-color: #fff;}
         #info td{border-width:0px; padding:5px 5px;}
         #info .left{text-align:left;)
         #info .right{text-align:right;)
