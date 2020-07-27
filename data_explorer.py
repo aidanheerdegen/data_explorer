@@ -164,18 +164,17 @@ class VariableSelector(VBox):
         # Variable search
         self.widgets['search'] = Text(
             placeholder='Search: start typing', 
-            layout={'width': 'auto'},
+            layout={'padding': '0px 5px', 'width': 'auto', 'overflow-x': 'scroll'},
         )
         # Variable selection box
         self.widgets['selector'] = Select(
             options=sorted(self.variables.name, key=str.casefold),
             rows=10,
-            layout={'width': 'auto'},
+            layout=self.widgets['search'].layout
         )
         # Variable info
         self.widgets['info'] = HTML(
-            # description='Search', 
-            layout={'width': '80%'},
+            layout=self.widgets['search'].layout
         )
         # Variable filtering elements
         self.widgets['filter_coords'] = Checkbox(
@@ -251,11 +250,11 @@ class VariableSelector(VBox):
         style = '<style>p{word-wrap: break-word}</style>' 
         selected_variable = self.widgets['selector'].label
         if selected_variable is None or selected_variable == '':
-            long_name = ''
+            long_name = '&nbsp;'
         else:
             # long_name = self.variables[self.variables.name == selected_variable].long_name.values[0]
             long_name = self.widgets['selector'].value
-        self.widgets['info'].value = style + '<p><b>Long name:</b> {long_name}</p>'.format(long_name=long_name)
+        self.widgets['info'].value = style + '<p>{long_name}</p>'.format(long_name=long_name)
     
     def _update_variables(self, variables):
         """
@@ -449,52 +448,65 @@ class DatabaseExplorer(VBox):
 
         box_layout = Layout(padding='10px', width='auto', border= '0px solid black')
 
+        style = '<style>p { line-height: 1.4; margin-bottom: 10px }</style>'
+
         # Gui header
         self.widgets['header'] = HTML(
-            value="""
+            value = style + """
             <h3>Database Explorer</h3>
 
             <p>Select an experiemt to show more detailed information where available.
-            With an experiment selected push 'Load' to open an Experiment Explorer gui.
+            With an experiment selected push 'Load Experiment' to open an Experiment 
+            Explorer gui.</p>
 
-            <p>Select keywords and/or variables and push 'Filter' to show only 
-            matching experiments. Use option or shift key to select multiple variables</p>
-
-            </p>
+            <p>The list of experiments can be filtered by keywords and/or variables. 
+            Multiple keywords can be selected using alt/option or the shift modifier
+            when selecting. To filter by variables select a variable and add it to the
+            "Filter variables" box using the ">>" button, and vice-versa to remove
+            variables from the filter. Push the 'Filter' button to show only 
+            matching experiments.</p>
             """,
             description='',
+            layout={'width': '60%'},
         ) 
 
         # Experiment selector box
         self.widgets['expt_selector'] = Select(
-            options=self.de.experiments.experiment,
-            rows=20,
-            layout={'width': 'initial'},
+            options=sorted(self.de.experiments.experiment, key=str.casefold),
+            rows=24,
+            layout={'padding': '0px 5px', 'width': 'auto'},
             disabled=False
         )
 
-        # Keyword filtering element is a box containing a bunch of
+        # Keyword filtering element is a Multiple selection box
         # checkboxes
-        self.widgets['filter_widget'] = VBox(layout={'overflow': 'scroll', 
-                                                     'width': 'auto'})
-        keywords_checkboxes = [Checkbox(description=str(k), 
-                                        value=False, 
-                                        indent=False,
-                                        layout=box_layout) for k in self.de.keywords]
-        self.widgets['filter_widget'].children = keywords_checkboxes
+        self.widgets['filter_widget'] = SelectMultiple(
+            rows=15,
+            options=sorted(self.de.keywords, key=str.casefold),
+            layout={'flex': '0 0 100%'},
+        )
+        # Reset keywords button
+        self.widgets['clear_keywords_button'] = Button(
+            description='Clear',
+            layout={'width': '20%', 'align': 'center'},
+            tooltip='Click to clear selected keywords'
+        )
+        self.widgets['keyword_box'] = VBox([self.widgets['filter_widget'], 
+                                            self.widgets['clear_keywords_button']],
+                                            layout={'flex': '0 0 40%'})
 
         # Filtering button
         self.widgets['filter_button'] = Button(
             description='Filter',
-            layout={'width': '50%', 'align': 'center'},
-            tooltip='Click to filter experiments'
+            # layout={'width': '50%', 'align': 'center'},
+            tooltip='Click to filter experiments',
         )
 
         # Variable filter selector combo widget
-        self.widgets['var_filter'] = VariableSelectFilter(self.de.variables)
+        self.widgets['var_filter'] = VariableSelectFilter(self.de.variables, layout={'flex': '0 0 40%'})
 
         # Tab box to contain keyword and variable filters
-        self.widgets['filter_tabs'] = Tab(title='Filter', children=[self.widgets['filter_widget'], 
+        self.widgets['filter_tabs'] = Tab(title='Filter', children=[self.widgets['keyword_box'], 
                                                                     self.widgets['var_filter']])
         self.widgets['filter_tabs'].set_title(0, 'Keyword')
         self.widgets['filter_tabs'].set_title(1, 'Variable')
@@ -502,7 +514,7 @@ class DatabaseExplorer(VBox):
         self.widgets['load_button'] = Button(
             description='Load Experiment',
             disabled=False,
-            layout={'width': '50%', 'align': 'center'},
+            layout={'width': '50%', },
             tooltip='Click to load experiment'
         )
 
@@ -517,14 +529,15 @@ class DatabaseExplorer(VBox):
         selectors = HBox([
                         VBox([Label(value="Experiments:"), 
                               self.widgets['expt_selector'],
-                              self.widgets['load_button']],
-                              layout={'padding': '10px'}),
+                              self.widgets['load_button'],
+                              ],
+                              layout={'padding': '0px 5px', 'flex': '0 0 30%'}),
                         VBox([Label(value="Filter by:"), 
                               self.widgets['filter_tabs'],
                               self.widgets['filter_button']],
-                              layout=box_layout,),
-                        ], layout=box_layout
-                        )
+                              layout={'padding': '0px 10px', 'flex': '0 0 65%'}),
+                              #layout=box_layout,),
+                        ])
 
         # Call super init and pass widgets as children
         super().__init__(children=[self.widgets['header'],
@@ -538,12 +551,19 @@ class DatabaseExplorer(VBox):
         self.widgets['expt_selector'].observe(self._expt_eventhandler, names='value')
         self.widgets['load_button'].on_click(self._load_experiment)
         self.widgets['filter_button'].on_click(self._filter_experiments)
+        self.widgets['clear_keywords_button'].on_click(self._clear_keywords)
 
     def _filter_restart_eventhandler(selector):
         """
         Re-populate variable list when checkboxes selected/de-selected
         """
         self._filter_variables()
+
+    def _clear_keywords(self, selector):
+        """
+        Deselect all keywords
+        """
+        self.widgets['filter_widget'].value = ()
 
     def _expt_eventhandler(self, selector):
         """
@@ -563,14 +583,15 @@ class DatabaseExplorer(VBox):
         style ="""
         <style>
             body  { font: normal 8px Verdana, Arial, sans-serif; }
-            table { border-spacing: 8px 0px; background-color: #fff;" }
-            td    { padding: 2px; }
+            table { padding: 10px; border-spacing: 0px 0px; background-color: #fff;" }
+            td    { padding: 10px; }
+            p     { line-height: 1.2; margin-top: 5px }
         </style>
         """
         self.widgets['expt_info'].value = style + """
         <table>
         <tr><td><b>Experiment:</b></td> <td>{experiment}</td></tr>
-        <tr><td style="vertical-align:top;"><b>Description:</b></td> <td>{description}</td></tr>
+        <tr><td style="vertical-align:top;"><b>Description:</b></td> <td><p>{description}</p></td></tr>
         <tr><td><b>Notes:</b></td> <td>{notes}</td></tr>
         <tr><td><b>Contact:</b></td> <td>{contact} &lt;{email}&gt;</td></tr>
         <tr><td><b>No. files:</b></td> <td>{nfiles}</td></tr>
@@ -590,13 +611,9 @@ class DatabaseExplorer(VBox):
         """
         Filter experiment list by keywords and variable
         """
-        kwds = []
         options = set(self.de.experiments.experiment)
 
-        for kwd in self.widgets['filter_widget'].children:
-            # print(kwd)
-            if kwd.value:
-                kwds.append(kwd.description)
+        kwds = self.widgets['filter_widget'].value
         if len(kwds) > 0:
             options.intersection_update(self.de.keyword_filter(kwds))
 
@@ -604,8 +621,7 @@ class DatabaseExplorer(VBox):
         if len(variables) > 0:
             options.intersection_update(self.de.variable_filter(variables))
 
-        self.widgets['expt_selector'].options = options
-        self.widgets['expt_selector'].value = None
+        self.widgets['expt_selector'].options = sorted(options, key=str.casefold)
 
     def _load_experiment(self, b):
         """
