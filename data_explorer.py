@@ -28,15 +28,15 @@ class DatabaseExtension:
     keywords = None
     variables = None
     expt_variable_map = None
-    restart_variables = None
     
-    def __init__(self, session=None):
+    def __init__(self, session=None, experiments=None):
         if session is None:
             session = cc.database.create_session()
         self.session              = session
+
         self.experiments          = cc.querying.get_experiments(session, all=True)
         self.keywords             = sorted(cc.querying.get_keywords(session), key=str.casefold)
-        self.expt_variable_map    = self.experiment_variable_map()
+        self.expt_variable_map    = self.experiment_variable_map(experiments)
         self.variables            = self.unique_variable_list()
 
     def experiment_variable_map(self, experiments=None):
@@ -59,14 +59,28 @@ class DatabaseExtension:
         # Create a new column to flag if variable is from a restart directory
         allvars['restart'] = allvars.ncfile.str.contains('restart')
 
+        # Create a new column to characterise model type
+        allvars['model'] = None
+
+        # There is no metadata in the files or database that will let us know which
+        # model produced the output, so use a heuristic that assumes if the data
+        # resides in a directory that is named for a model type it is output from 
+        # that model. Doesn't use os.path.sep as it is never envisaged this will be used 
+        # outside of a posix system
+        allvars.loc[(allvars.ncfile.str.contains('/ocean/')  |
+                     allvars.ncfile.str.contains('/ocn/')), 'model'] = 'ocean'
+        allvars.loc[(allvars.ncfile.str.contains('/atmosphere/') | 
+                     allvars.ncfile.str.contains('/atm/')), 'model'] = 'atmosphere'
+        allvars.loc[allvars.ncfile.str.contains('/ice/'), 'model'] = 'ice'
+
         # Create a new column to flag if variable has units which match a number of criteria
         # that indicated it is a coordinate
-        allvars = allvars.assign(coordinate=(allvars.units.str.contains('degrees', na=False) 
-                                            | allvars.units.str.contains('since', na=False) 
-                                            | allvars.units.str.match('^radians$', na=False)
-                                            | allvars.units.str.startswith('days', na=False)))  # legit units: %/day, day of year
+        allvars = allvars.assign(coordinate=(allvars.units.str.contains('degrees', na=False) |
+                                             allvars.units.str.contains('since', na=False)   |
+                                             allvars.units.str.match('^radians$', na=False)  |
+                                             allvars.units.str.startswith('days', na=False)))  # legit units: %/day, day of year
 
-        return allvars[['name', 'long_name', 'restart', 'coordinate']]
+        return allvars[['name', 'long_name', 'model', 'restart', 'coordinate']]
 
     def unique_variable_list(self):
         """
@@ -75,12 +89,6 @@ class DatabaseExtension:
         """
         return self.expt_variable_map.reset_index(drop=True).drop_duplicates()
         
-    def get_restart_variables(self):
-        """
-        Return a table of all variables (name/long_name) from a restart directory
-        """
-        return self.variables[self.variables.restart]
-
     def keyword_filter(self, keywords):
         """
         Return a list of experiments matching *all* of the supplied keywords
@@ -151,15 +159,12 @@ class VariableSelector(VBox):
     variables = None
     widgets = {}
 
-    def __init__(self, variables, **kwargs):
+    def __init__(self, variables, rows=10, **kwargs):
         """
         variables is a pandas dataframe. kwargs are passed through to child
         widgets which, theoretically, allows for layout information to be
         specified
         """
-
-        # Add a new column to keep track of visibility in widget
-        self.variables = variables.assign(visible=True)
 
         # Variable search
         self.widgets['search'] = Text(
@@ -168,8 +173,8 @@ class VariableSelector(VBox):
         )
         # Variable selection box
         self.widgets['selector'] = Select(
-            options=sorted(self.variables.name, key=str.casefold),
-            rows=10,
+            options=(), #sorted(self.variables.name, key=str.casefold),
+            rows=rows,
             layout=self.widgets['search'].layout
         )
         # Variable info
@@ -188,12 +193,22 @@ class VariableSelector(VBox):
             description='Hide restarts',
         )
 
+        self.set_variables(variables)
+
         super().__init__(children=list(self.widgets.values()), **kwargs)
 
         # Call the event handlers to set up filtering etc
         self._filter_eventhandler(None)
         self._selector_eventhandler(None)
         self._set_observes()
+
+    def set_variables(self, variables):
+
+        # Add a new column to keep track of visibility in widget
+        self.variables = variables.assign(visible=True)
+
+        # Update selector
+        self._update_variables(self.variables)
 
     def _set_observes(self):
         """
@@ -238,8 +253,12 @@ class VariableSelector(VBox):
 
         variables = self.variables[self.variables.visible]
         if search_term is not None or search_term != '':
-            variables = variables[variables.name.str.contains(search_term, na=False) |
-                                  variables.long_name.str.contains(search_term, na=False) ]
+            try:
+                variables = variables[variables.name.str.contains(search_term, na=False) |
+                                    variables.long_name.str.contains(search_term, na=False) ]
+            except:
+                print('Illegal character in search!')
+                search_term = self.widgets['search'].value
 
         self._update_variables(variables)
     
@@ -299,6 +318,75 @@ class VariableSelector(VBox):
         # Need to recalculate the visible flag as new variables have been added
         self._filter_eventhandler(None)
 
+    def get_selected(self):
+        """
+        Return currently selected variable name
+        """
+        return self.widgets['selector'].label
+
+class VariableSelectorInfo(VariableSelector):
+    """
+    Subclass of VariableSelector to display more info in a separate widget
+    """
+
+    def __init__(self, variables, daterange, frequency, rows=10, **kwargs):
+
+        super(VariableSelectorInfo, self).__init__(variables, rows, **kwargs)
+
+        # Requires two widgets passed in as an argument. An html box where 
+        # extended meta-data will be displayed, and a date range widget for
+        # selecting start and end times to load
+        self.widgets['daterange'] = daterange
+        self.widgets['frequency'] = frequency
+
+        self._filter_eventhandler(None)
+
+        self.widgets['selector'].observe(self._var_eventhandler, names='value')
+        self.widgets['frequency'].observe(self._frequency_eventhandler, names='value')
+
+    def _var_eventhandler(self, selector):
+        """
+        Called when variable selected
+        """
+        variable_name = self.widgets['selector'].label
+        variable = self.variables.loc[self.variables['name'] == variable_name]
+
+        # Initialise daterange widget
+        self.widgets['daterange'].options = ['0000','0000']
+        self.widgets['daterange'].disabled = True
+
+        self.widgets['frequency'].options = []
+        self.widgets['frequency'].disabled = True
+
+        if len(variable) == 0:
+            return
+        
+        # print(variable.time_start.values[0], variable.time_end.values[0],
+        #       variable.frequency.values[0], variable.frequency.values[0])
+        print(variable.frequency.values)
+
+        self.widgets['frequency'].options = variable.frequency
+        self.widgets['frequency'].index = 0
+        self.widgets['frequency'].disabled = False
+
+    def _frequency_eventhandler(self, selector):
+
+        variable_name = self.widgets['selector'].label
+        frequency = self.widgets['frequency'].value
+
+        variable = self.variables.loc[(self.variables['name'] == variable_name) & (self.variables['frequency'] == frequency)]
+
+        try:
+            # Populate daterange widget if variable contains necessary information
+            # Convert human readable frequency to pandas compatigle frequency string 
+            freq = re.sub(r'^(\d+) (\w)(\w+)', r'\1\2', str(variable.frequency.values[0]).upper())
+            dates = pd.date_range(variable.time_start.values[0], variable.time_end.values[0] , freq=freq)
+            self.widgets['daterange'].options = [(i.strftime('%Y/%m/%d'), i) for i in dates]                
+            self.widgets['daterange'].value = (dates[0], dates[-1])
+        except:
+            pass
+        finally:
+            self.widgets['daterange'].disabled = False
 
 class VariableSelectFilter(widgets.HBox):
     """
@@ -632,7 +720,7 @@ class DatabaseExplorer(VBox):
             self.ee.run(experiment=self.widgets['expt_selector'].value)
 
 
-class ExperimentExplorer():
+class ExperimentExplorer(VBox):
 
     session = None
     data = None
@@ -641,12 +729,22 @@ class ExperimentExplorer():
     widgets = {}
     handlers = {}
 
-    def __init__(self, session=None, de=None):
+    def __init__(self, session=None, experiment=None):
 
-        if de is None: 
-            de = DatabaseExplorer(session)
+        if experiment is None:
+            # Have to pass an experiment to DatabaseExtension so that
+            # it only creates a variable/keyword map for a single 
+            # experiment
+            expts = cc.querying.get_experiments(session, all=True)
+            experiment = expts.iloc[0].name
 
-        self.de = de
+        self.de = DatabaseExtension(session, experiments=experiment)
+
+        self.experiment_name = experiment
+
+        self._make_widgets()
+        self._load_experiment(self.experiment_name)
+        self._set_handlers()
 
     @staticmethod
     def return_value_or_empty(value):
@@ -656,7 +754,7 @@ class ExperimentExplorer():
         else:
             return value
 
-    def make_widgets(self):
+    def _make_widgets(self):
 
         # Header widget
         self.widgets['header'] = widgets.HTML(
@@ -677,44 +775,31 @@ class ExperimentExplorer():
             description='',
         )
         
-        # Variable search box
-        self.widgets['var_search'] = Text(
-            placeholder='Start typing', 
-            description='Search', 
-            layout={'width': 'auto'})
-            
-        # Variable selector element
-        self.widgets['var_selector'] = Select(
-            options=[],
-            rows=20,
-            description='Variables:',
-            layout={'width': 'auto'}
-        )
-
-        # Coordinate variable filter checkbox
-        self.widgets['var_filter_coords'] = Checkbox(
-            value=True,
-            indent=True,
-            description='Hide coordinates',
-        )
-
-        # Restart variable filter checkbox
-        self.widgets['var_filter_restarts'] = Checkbox(
-            value=True,
-            indent=True,
-            description='Hide restarts',
-        )
-        
         # Experiment selector element
         self.widgets['expt_selector'] = Dropdown(
-            options=self.de.experiments.experiment,
-            value=self.experiment_name,
-            description='Experiment:',
-            layout={'width': 'auto'}
+            options=() #sorted(self.de.experiments.experiment),
+            # value=self.experiment_name,
+            description='',
+            layout={'width': '40%'}
+        )
+
+        # Experiment selector element
+        self.widgets['model_selector'] = Dropdown(
+            options=() #sorted(self.de.experiments.experiment),
+            # value=self.experiment_name,
+            description='',
+            layout={'width': '40%'}
         )
 
         # Date selection widget
-        self.widgets['var_daterange'] = widgets.SelectionRangeSlider(
+        self.widgets['frequency'] = widgets.Dropdown(
+            options=(),
+            description='Frequency',
+            disabled=True,
+        )
+
+        # Date selection widget
+        self.widgets['daterange'] = widgets.SelectionRangeSlider(
             options=['0000','0001'],
             index=(0,1),
             description='Date range',
@@ -722,8 +807,12 @@ class ExperimentExplorer():
             disabled=True
         )
 
-        # Variable information widget
-        self.widgets['var_info'] = widgets.HTML()
+        # Variable filter selector combo widget. Pass in two widgets so they
+        # can be updated by the VariableSelectorInfo widget
+        self.widgets['var_selector'] = VariableSelectorInfo(self.de.variables, 
+                                                            daterange=self.widgets['daterange'],
+                                                            frequency=self.widgets['frequency'],
+                                                            rows=20)
 
         # DataArray information widget
         self.widgets['data_box'] = widgets.HTML()
@@ -736,223 +825,89 @@ class ExperimentExplorer():
             tooltip='Click to load data'
         )
 
-        def load_data(b):
-            """
-            Called when load_button clicked
-            """
+        info_pane = VBox([self.widgets['frequency'],
+                          self.widgets['daterange']])
 
-            data_box = self.widgets['data_box']
+        centre_pane = HBox([VBox([self.widgets['var_selector']]),
+                                  info_pane])
 
-            varname = self.widgets['var_selector'].value
-            (start_time, end_time) = self.widgets['var_daterange'].value
+        # Call super init and pass widgets as children
+        super().__init__(children=[self.widgets['header'],
+                                   self.widgets['expt_selector'],
+                                   centre_pane,
+                                   self.widgets['load_button'],
+                                   self.widgets['data_box']])
 
-            load_command = """
-            <pre><code>cc.querying.getvar('{expt}', '{var}', session, 
-                       start_time='{start}', end_time='{end}')</code></pre>
-            """.format(expt=self.widgets['expt_selector'].value, 
-                    var=varname,
-                    start=str(start_time),
-                    end=str(end_time))
+    def _set_handlers(self):
+        """
+        Define routines to handle button clicks and experiment selection
+        """
 
-            # Interim message to tell user what is happening
-            data_box.value = 'Loading data, using following command ...\n\n' + load_command + 'Please wait ... '
+        self.widgets['load_button'].on_click(self._load_data)
+        self.widgets['expt_selector'].observe(self._expt_eventhandler, names='value')
+        # self.widgets['var_selector'].observe(self._var_eventhandler, names='value')
 
-            try:
-                self.data = cc.querying.getvar(self.experiment_name,
-                                        varname,
-                                        self.de.session, 
-                                        start_time=str(start_time),
-                                        end_time=str(end_time))
-            except Exception as e:
-                data_box.value = 'Error loading variable {} data: {}'.format(varname, e)
-                return
+    def _expt_eventhandler(self, selector):
+        """
+        Called when experiment dropdown menu changes
+        """
+        self._load_experiment(selector.new)
 
-            # Update data box with message about command used and pretty HTML
-            # representation of DataArray
-            data_box.value = 'Loaded data with' + load_command + self.data._repr_html_()
+    def _load_data(self, b):
+        """
+        Called when load_button clicked
+        """
 
-        self.widgets['load_button'].on_click(load_data)
-        
-        def expt_eventhandler(selector):
-            """
-            Called when experiment dropdown menu changes
-            """
-            self.load_experiment(selector.new)
+        data_box = self.widgets['data_box']
 
-        self.widgets['expt_selector'].observe(expt_eventhandler, names='value')
-    
-        def var_search_eventhandler(selector):
-            """
-            Called when text type into variable search box
-            """
-            # Find all variables with name or long name that
-            # contain the search text
-            self.widgets['var_selector'].options = self.get_visible_variables(selector.new)
-            # Ensure no current selection
-            self.widgets['var_selector'].value = None
+        varname = self.widgets['var_selector'].get_selected()
+        (start_time, end_time) = self.widgets['daterange'].value
+        frequency = self.widgets['frequency'].value
 
-        self.widgets['var_search'].observe(var_search_eventhandler, names='value')
+        load_command = """
+        <pre><code>cc.querying.getvar('{expt}', '{var}', session, 
+                    start_time='{start}', end_time='{end}, frequency={frequency}')</code></pre>
+        """.format(expt=self.widgets['expt_selector'].value, 
+                var=varname,
+                start=str(start_time),
+                end=str(end_time),
+                frequency=str(frequency))
 
-        def filter_restart_eventhandler(selector):
-            """
-            Filter restart and coordinate variables when checkboxes
-            selected. Called when checkboxes selected/deselected
-            """
-            # Mask options
-            self.widgets['var_selector'].options = self.get_visible_variables() #self.widgets['var_search'].value)
-            self.widgets['var_selector'].value = None
+        # Interim message to tell user what is happening
+        data_box.value = 'Loading data, using following command ...\n\n' + load_command + 'Please wait ... '
 
-        self.widgets['var_filter_restarts'].observe(filter_restart_eventhandler, names='value')
-        self.widgets['var_filter_coords'].observe(filter_restart_eventhandler, names='value')
-            
-        def var_eventhandler(selector):
-            """
-            Called when variable selected
-            """
-            variable = self.variables.loc[self.variables['name'] == selector.new]
+        try:
+            self.data = cc.querying.getvar(self.experiment_name,
+                                    varname,
+                                    self.de.session, 
+                                    start_time=str(start_time),
+                                    end_time=str(end_time),
+                                    frequency=frequency)
+        except Exception as e:
+            data_box.value = data_box.value + 'Error loading variable {} data: {}'.format(varname, e)
+            return
 
-            # Initialise daterange widget
-            self.widgets['var_daterange'].options = ['0000','0000']
-            self.widgets['var_daterange'].disabled = True
+        # Update data box with message about command used and pretty HTML
+        # representation of DataArray
+        data_box.value = 'Loaded data with' + load_command + self.data._repr_html_()
 
-            if len(variable) == 0:
-                return
-            
-            # Populate variable information
-            self.load_var_info(self.return_value_or_empty(variable.long_name.values[0]), 
-                               self.return_value_or_empty(variable.frequency.values[0]))
-
-            # Populate daterange widget if variable contains necessary information
-            if (variable.time_start.values[0] is not None and variable.time_end.values[0]  is not None and
-                variable.frequency.values[0]  is not None and not variable.frequency.values[0] == 'static'):
-                self.widgets['var_daterange'].disabled = False
-                # Convert human readable frequency to pandas compatigle frequency string 
-                freq = re.sub(r'^(\d+) (\w)(\w+)', r'\1\2', str(variable.frequency.values[0]).upper())
-                dates = pd.date_range(variable.time_start.values[0], variable.time_end.values[0] , freq=freq)
-                self.widgets['var_daterange'].options = [(i.strftime('%Y/%m/%d'), i) for i in dates]                
-                self.widgets['var_daterange'].value = (dates[0], dates[-1])
-
-        self.widgets['var_selector'].observe(var_eventhandler, names='value')
-
-    def get_visible_variables(self, variable_name=None):
-
-        # First check masking of coords and restarts 
-
-        # Set up a mask with all true values
-        mask = self.de.variables.name.ne('')
-
-        # Filter out restarts and coordinates if checkboxes selected 
-        if self.widgets['var_filter_restarts'].value:
-            mask = mask & (self.de.variables['restart'] != self.widgets['var_filter_restarts'].value)
-        if self.widgets['var_filter_coords'].value:
-            mask = mask & (self.de.variables['coordinate'] != self.widgets['var_filter_coords'].value)
-
-        # Make a temporary list of variables
-        variables = self.de.variables[mask]
-
-        if variable_name is None or variable_name == '':
-            self.widgets['var_search'].value = ''
-        else:
-            variables = variables[variables.name.str.contains(variable_name, na=False) | 
-                                  variables.long_name.str.contains(variable_name, na=False)]
-
-        # Return a sorted list of variables matching the current search criteria
-        return sorted(variables.name, key=str.casefold)
-
-    def load_experiment(self, experiment_name):
+    def _load_experiment(self, experiment_name):
         """
         When first instantiated, or experiment changed, the variable
         selector widget needs to be refreshed
         """
+        self.de = DatabaseExtension(self.session, experiments=experiment_name)
         self.experiment_name = experiment_name
-        self.variables = self.de.get_variables(experiment_name)
-        self.load_variables()
+        self.variables = pd.merge(self.de.variables, 
+                                  self.de.get_variables(self.experiment_name), 
+                                  how='inner', on=['name', 'long_name'])
+        self._load_variables()
 
-    def load_variables(self):
+    def _load_variables(self):
         """
         Populate the variable selector dialog
         """
-        
-        # Reset the search box
-        self.widgets['var_search'].value = ''
-
-        # Mask options
-        self.widgets['var_selector'].options = self.get_visible_variables()
-        self.widgets['var_selector'].value = None
-
-    def load_var_info(self, long_name, frequency):
-        """
-        Populate variable information box
-        """
-    
-        css = """
-        <style type="text/css">
-        #info table{background-color: #fff;}
-        #info td{border-width:0px; padding:5px 5px;}
-        #info .left{text-align:left;)
-        #info .right{text-align:right;)
-        </style>
-        """
-        self.widgets['var_info'].value = css + """
-        <table id="info">
-        <tr>
-            <td class="right">Long name:</td> <td class="left">{long_name}</td>
-        </tr>
-        <tr>
-            <td class="right">Frequency:</td> <td class="left">{frequency}</td>
-        </tr>
-        </table>
-        """.format(long_name=long_name, frequency=frequency)
-
-    def run(self, experiment=None):
-
-        # Check the experiment specified exists in database
-        if experiment is not None:
-            if self.de.experiments.experiment.str.contains(experiment).any():
-                self.experiment_name = experiment
-            else:
-                experiment = None
-
-        # Default to first experiment
-        if experiment is None:
-            self.experiment_name = self.de.experiments.iloc[0].name
-
-        self.make_widgets()
-
-        # Set values initial values for experiment selector widget
-        self.widgets['expt_selector'].options = self.de.experiments.experiment
-        self.widgets['expt_selector'].value = self.experiment_name
-
-        self.load_experiment(self.experiment_name)
-        self.load_var_info('','')
-
-        display(self.widgets['header'])
-        
-        box_layout = widgets.Layout(position='left', width='auto', padding='10px', flex='1 1 auto', border='0px solid black')
-        
-        # Left pane
-        var_select_box = VBox([
-                                self.widgets['var_search'], 
-                                self.widgets['var_selector'],
-                                self.widgets['var_filter_coords'],
-                                self.widgets['var_filter_restarts'],
-                               ])
-   
-        # Right pane
-        var_info_box = VBox([
-                             self.widgets['expt_selector'],
-                             self.widgets['var_info'],
-                             self.widgets['var_daterange'],
-                             self.widgets['load_button']
-                            ], 
-                            layout=box_layout
-                            )
-        # Main dialog
-        display(HBox([var_select_box, var_info_box], layout=box_layout))
-
-        # Output box
-        display(self.widgets['data_box'])
-
+        self.widgets['var_selector'].set_variables(self.variables)
 
 def VariableExplorer(ds):
 
