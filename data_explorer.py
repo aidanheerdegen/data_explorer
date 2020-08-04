@@ -167,6 +167,13 @@ class VariableSelector(VBox):
         widgets which, theoretically, allows for layout information to be
         specified
         """
+        self._make_widgets(rows)
+        super().__init__(children=list(self.widgets.values()), **kwargs)
+        self.set_variables(variables)
+        self._set_info()
+        self._set_observes()
+
+    def _make_widgets(self, rows):
 
         # Experiment selector element
         self.widgets['model'] = Dropdown(
@@ -200,12 +207,6 @@ class VariableSelector(VBox):
             indent=False,
             description='Hide restarts',
         )
-
-        super().__init__(children=list(self.widgets.values()), **kwargs)
-
-        self.set_variables(variables)
-        self._set_info()
-        self._set_observes()
 
     def _set_observes(self):
         """
