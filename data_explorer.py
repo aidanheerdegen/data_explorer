@@ -32,32 +32,32 @@ class DatabaseExtension:
     def __init__(self, session=None, experiments=None):
         if session is None:
             session = cc.database.create_session()
-        self.session              = session
+        self.session = session
 
-        self.experiments          = cc.querying.get_experiments(session, all=True)
-        self.keywords             = sorted(cc.querying.get_keywords(session), key=str.casefold)
-        self.expt_variable_map    = self.experiment_variable_map(experiments)
-        self.variables            = self.unique_variable_list()
+        self.allexperiments = cc.querying.get_experiments(session, all=True)
 
-    def experiment_variable_map(self, experiments=None):
+        if experiments is None:
+            self.experiments = self.allexperiments
+        else:
+            if isinstance(experiments, str):
+                experiments = [experiments,]
+            # Subset experiment column from dataframe, and don't pass as a simple list
+            # otherwise index is not correctly named
+            self.experiments = self.allexperiments[self.allexperiments.experiment.isin(experiments)]
+
+        self.keywords = sorted(cc.querying.get_keywords(session), key=str.casefold)
+        self.expt_variable_map = self.experiment_variable_map()
+        self.variables = self.unique_variable_list()
+
+    def experiment_variable_map(self):
         """
         Make a pandas table with experiment as the index and columns
         of name, long_name and restart flag.
 
         Also make lists of unique name/long_name 
         """
-
-        if experiments is None:
-            experiments = self.experiments.experiment
-        else:
-            if isinstance(experiments, str):
-                experiments = [experiments,]
-            # Subset experiment column from dataframe, and don't pass as a simple list
-            # otherwise index is not correctly named
-            experiments = self.experiments[self.experiments.experiment.isin(experiments)].experiment    
-
-        allvars = pd.concat([self.get_variables(expt)
-                     for expt in experiments], keys=experiments)
+        allvars = pd.concat([self.get_variables(expt) for expt in self.experiments.experiment], 
+                            keys=self.experiments.experiment)
 
         # Create a new column to flag if variable is from a restart directory
         allvars['restart'] = allvars.ncfile.str.contains('restart')
@@ -601,6 +601,9 @@ class DatabaseExplorer(VBox):
             "Filter variables" box using the ">>" button, and vice-versa to remove
             variables from the filter. Push the 'Filter' button to show only 
             matching experiments.</p>
+
+            <p>The ExperimentExplorer element is accessible as the <tt>ee</tt> attribute
+            of the DatabaseExplorer object</p>
             """,
             description='',
             layout={'width': '60%'},
@@ -661,6 +664,9 @@ class DatabaseExplorer(VBox):
             layout={'width': '80%', 'align': 'center'},
         )
 
+        # Experiment explorer box
+        self.widgets['expt_explorer'] = HBox()
+
         # Some box layout nonsense to organise widgets in space
         selectors = HBox([
                         VBox([Label(value="Experiments:"), 
@@ -678,7 +684,8 @@ class DatabaseExplorer(VBox):
         # Call super init and pass widgets as children
         super().__init__(children=[self.widgets['header'],
                                    selectors,
-                                   self.widgets['expt_info']])
+                                   self.widgets['expt_info'],
+                                   self.widgets['expt_explorer']])
 
     def _set_handlers(self):
         """
@@ -766,7 +773,7 @@ class DatabaseExplorer(VBox):
         if self.widgets['expt_selector'].value is not None:
             self.ee = ExperimentExplorer(session=self.session, 
                                          experiment=self.widgets['expt_selector'].value)
-            display(self.ee)
+            self.widgets['expt_explorer'].children = [self.ee]
 
 
 class ExperimentExplorer(VBox):
@@ -826,7 +833,7 @@ class ExperimentExplorer(VBox):
         
         # Experiment selector element
         self.widgets['expt_selector'] = Dropdown(
-            options=sorted(self.de.experiments.experiment, key=str.casefold),
+            options=sorted(self.de.allexperiments.experiment, key=str.casefold),
             value=self.experiment_name,
             description='',
             layout={'width': '40%'}
@@ -867,7 +874,8 @@ class ExperimentExplorer(VBox):
         )
 
         info_pane = VBox([self.widgets['frequency'],
-                          self.widgets['daterange']])
+                          self.widgets['daterange']],
+                          layout={'padding': '10% 0'})
 
         centre_pane = HBox([VBox([self.widgets['var_selector']]),
                                   info_pane])
@@ -886,7 +894,6 @@ class ExperimentExplorer(VBox):
 
         self.widgets['load_button'].on_click(self._load_data)
         self.widgets['expt_selector'].observe(self._expt_eventhandler, names='value')
-        # self.widgets['var_selector'].observe(self._var_eventhandler, names='value')
 
     def _expt_eventhandler(self, selector):
         """
