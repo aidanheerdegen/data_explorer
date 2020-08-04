@@ -875,7 +875,7 @@ class ExperimentExplorer(VBox):
 
         info_pane = VBox([self.widgets['frequency'],
                           self.widgets['daterange']],
-                          layout={'padding': '10% 0'})
+                          layout={'padding': '10% 0', 'width': '50%'})
 
         centre_pane = HBox([VBox([self.widgets['var_selector']]),
                                   info_pane])
