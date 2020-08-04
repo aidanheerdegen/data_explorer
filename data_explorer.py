@@ -73,6 +73,8 @@ class DatabaseExtension:
                      allvars.ncfile.str.contains('/atm/')), 'model'] = 'atmosphere'
         allvars.loc[allvars.ncfile.str.contains('/ice/'), 'model'] = 'ice'
 
+        allvars['model'] = allvars['model'].astype('category')
+
         # Create a new column to flag if variable has units which match a number of criteria
         # that indicated it is a coordinate
         allvars = allvars.assign(coordinate=(allvars.units.str.contains('degrees', na=False) |
@@ -166,6 +168,12 @@ class VariableSelector(VBox):
         specified
         """
 
+        # Experiment selector element
+        self.widgets['model'] = Dropdown(
+            options=(),
+            layout={'padding': '0px 5px', 'width': 'initial'},
+            description='',
+        )
         # Variable search
         self.widgets['search'] = Text(
             placeholder='Search: start typing', 
@@ -193,22 +201,11 @@ class VariableSelector(VBox):
             description='Hide restarts',
         )
 
-        self.set_variables(variables)
-
         super().__init__(children=list(self.widgets.values()), **kwargs)
 
-        # Call the event handlers to set up filtering etc
-        self._filter_eventhandler(None)
-        self._selector_eventhandler(None)
+        self.set_variables(variables)
+        self._set_info()
         self._set_observes()
-
-    def set_variables(self, variables):
-
-        # Add a new column to keep track of visibility in widget
-        self.variables = variables.assign(visible=True)
-
-        # Update selector
-        self._update_variables(self.variables)
 
     def _set_observes(self):
         """
@@ -217,30 +214,85 @@ class VariableSelector(VBox):
         for w in ['filter_coords', 'filter_restarts']:
             self.widgets[w].observe(self._filter_eventhandler, names='value')
 
+        self.widgets['model'].observe(self._model_eventhandler, names='value')
         self.widgets['search'].observe(self._search_eventhandler, names='value')
         self.widgets['selector'].observe(self._selector_eventhandler, names='value')
 
+    def set_variables(self, variables):
+        """
+        Change variables
+        """
+        # Add a new column to keep track of visibility in widget
+        self.variables = variables.assign(visible=True)
+
+        # Set default filtering
+        self._filter_variables()
+
+        # Update selector
+        self._update_selector(self.variables[self.variables.visible])
+
+    def _update_selector(self, variables):
+        """
+        Update the variables in the selector. The variable are passed as an
+        argument, so can differ from the internal variable list. This allows
+        for easy filtering
+        """
+        # Populate model selector. Note label and value differ
+        options = {'All models': ''}
+        for model in variables.model.cat.categories.values:
+            options["{} only".format(model.capitalize())] = model
+        self.widgets['model'].options = options
+
+        # Populate variable selector
+        self.widgets['selector'].options = dict(variables.sort_values(['name'])[['name','long_name']].values)
+
+    def _reset_filters(self):
+        """
+        Reset filters to default values
+        """
+        for w in ['filter_coords', 'filter_restarts']:
+            self.widgets[w].value = True
+
+    def _model_eventhandler(self, event=None):
+        """
+        Filter by model 
+        """
+        model = self.widgets['model'].value
+
+        # Reset the coord and restart filters when a model changed
+        self._reset_filters()
+        self._filter_variables(model=model)
+
     def _filter_eventhandler(self, event=None):
+
+        self._filter_variables(self.widgets['filter_coords'].value,
+                               self.widgets['filter_restarts'].value,
+                               self.widgets['model'].value)
+
+    def _filter_variables(self, coords=True, restarts=True, model=''):
         """
         Optionally hide some variables
         """
-
         # Set up a mask with all true values
         mask = self.variables.name.ne('')
 
-        # Filter out restarts and coordinates if checkboxes selected 
-        if self.widgets['filter_restarts'].value:
-            mask = mask & (self.variables['restart'] != self.widgets['filter_restarts'].value)
-        if self.widgets['filter_coords'].value:
-            mask = mask & (self.variables['coordinate'] != self.widgets['filter_coords'].value)
-        
+        # Filter for matching models
+        if model != '':
+            mask = mask & (self.variables['model'] == model)
+
+        # Conditionally filter out restarts and coordinates
+        if coords:
+            mask = mask & ~self.variables['coordinate']
+        if restarts:
+            mask = mask & ~self.variables['restart']
+
         # Mask out hidden variables
         self.variables['visible'] = mask
 
         # Update the variable selector
-        self._update_variables(self.variables[self.variables.visible])
+        self._update_selector(self.variables[self.variables.visible])
 
-        # Wipe the search
+        # Reset the search
         self.widgets['search'].value = ''
         self.widgets['selector'].value = None
 
@@ -260,27 +312,23 @@ class VariableSelector(VBox):
                 print('Illegal character in search!')
                 search_term = self.widgets['search'].value
 
-        self._update_variables(variables)
+        self._update_selector(variables)
     
     def _selector_eventhandler(self, event=None):
         """
         Update variable info when variable selected
         """
-        style = '<style>p{word-wrap: break-word}</style>' 
-        selected_variable = self.widgets['selector'].label
-        if selected_variable is None or selected_variable == '':
+        self._set_info(self.widgets['selector'].value)
+    
+    def _set_info(self, long_name=None):
+        """
+        Set long name info widget 
+        """
+        if long_name is None or long_name == '':
             long_name = '&nbsp;'
-        else:
-            # long_name = self.variables[self.variables.name == selected_variable].long_name.values[0]
-            long_name = self.widgets['selector'].value
+        style = '<style>p{word-wrap: break-word}</style>' 
         self.widgets['info'].value = style + '<p>{long_name}</p>'.format(long_name=long_name)
     
-    def _update_variables(self, variables):
-        """
-        Update the variables visible in the selector
-        """
-        self.widgets['selector'].options = dict(variables.sort_values(['name'])[['name','long_name']].values)
-
     def delete(self, variable_names=None):
         """
         Remove variables
@@ -361,10 +409,6 @@ class VariableSelectorInfo(VariableSelector):
         if len(variable) == 0:
             return
         
-        # print(variable.time_start.values[0], variable.time_end.values[0],
-        #       variable.frequency.values[0], variable.frequency.values[0])
-        print(variable.frequency.values)
-
         self.widgets['frequency'].options = variable.frequency
         self.widgets['frequency'].index = 0
         self.widgets['frequency'].disabled = False
@@ -777,16 +821,8 @@ class ExperimentExplorer(VBox):
         
         # Experiment selector element
         self.widgets['expt_selector'] = Dropdown(
-            options=() #sorted(self.de.experiments.experiment),
-            # value=self.experiment_name,
-            description='',
-            layout={'width': '40%'}
-        )
-
-        # Experiment selector element
-        self.widgets['model_selector'] = Dropdown(
-            options=() #sorted(self.de.experiments.experiment),
-            # value=self.experiment_name,
+            options=sorted(self.de.experiments.experiment, key=str.casefold),
+            value=self.experiment_name,
             description='',
             layout={'width': '40%'}
         )
@@ -898,6 +934,7 @@ class ExperimentExplorer(VBox):
         """
         self.de = DatabaseExtension(self.session, experiments=experiment_name)
         self.experiment_name = experiment_name
+        # Add metadata
         self.variables = pd.merge(self.de.variables, 
                                   self.de.get_variables(self.experiment_name), 
                                   how='inner', on=['name', 'long_name'])
@@ -908,6 +945,7 @@ class ExperimentExplorer(VBox):
         Populate the variable selector dialog
         """
         self.widgets['var_selector'].set_variables(self.variables)
+        self.widgets['var_selector']._filter_eventhandler(None)
 
 def VariableExplorer(ds):
 
