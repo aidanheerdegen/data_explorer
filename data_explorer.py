@@ -51,7 +51,10 @@ class DatabaseExtension:
             experiments = self.experiments.experiment
         else:
             if isinstance(experiments, str):
-                experiments = [experiments, ]
+                experiments = [experiments,]
+            # Subset experiment column from dataframe, and don't pass as a simple list
+            # otherwise index is not correctly named
+            experiments = self.experiments[self.experiments.experiment.isin(experiments)].experiment    
 
         allvars = pd.concat([self.get_variables(expt)
                      for expt in experiments], keys=experiments)
@@ -761,8 +764,9 @@ class DatabaseExplorer(VBox):
         Open an Experiment Explorer UI with selected experiment
         """
         if self.widgets['expt_selector'].value is not None:
-            self.ee = ExperimentExplorer(self.session, self.de)
-            self.ee.run(experiment=self.widgets['expt_selector'].value)
+            self.ee = ExperimentExplorer(session=self.session, 
+                                         experiment=self.widgets['expt_selector'].value)
+            display(self.ee)
 
 
 class ExperimentExplorer(VBox):
