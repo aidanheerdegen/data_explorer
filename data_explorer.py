@@ -914,7 +914,7 @@ class ExperimentExplorer(VBox):
 
         load_command = """
         <pre><code>cc.querying.getvar('{expt}', '{var}', session, 
-                    start_time='{start}', end_time='{end}, frequency={frequency}')</code></pre>
+                    start_time='{start}', end_time='{end}', frequency='{frequency}')</code></pre>
         """.format(expt=self.widgets['expt_selector'].value, 
                 var=varname,
                 start=str(start_time),
